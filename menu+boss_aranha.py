@@ -53,18 +53,24 @@ COR_HISTORIA   = (255, 165,   0)
 # ══════════════════════════════════════════════════════
 MUSICA_MENU     = "fundo_inicio.mp3"
 SOM_CLIQUE      = "clique.mp3"
-MUSICA_HISTORIA = "historia.mp3"
+MUSICA_HISTORIA1 = "historia.mp3"
 MUSICA_BOSS     = "aranha.mp3"
+MUSICA_FASE2 = "historia2.mp3"
 
 # ══════════════════════════════════════════════════════
 #   EDITAR — Historinha
 # ══════════════════════════════════════════════════════
-HISTORIA = [
+HISTORIA1 = [
     "Na noite mais sombria do ano...\numa criança desapareceu.",
     "A vila de Ravenmoor está em pânico.\nNinguém se atreve a entrar na floresta amaldiçoada.",
     "Mas você não é como os outros.\nVocê conhece os segredos das sombras.",
     "Enfrente bruxas, fantasmas e criaturas das trevas\npara resgatar o que foi perdido.",
     "A noite é longa.\nE o Halloween... mal começou.",
+]
+HISTORIA2 = [
+    "A aranha foi derrotada...\nmas o perigo não acabou.",
+    "Uma nova ameaça surge das sombras.",
+    "Prepare-se para o próximo desafio.",
 ]
 TEMPO_SLIDE = 3.5
 
@@ -371,17 +377,18 @@ def update_historia(dt):
         slide_alpha=max(0,255-int(255*slide_t/FADE))
         if slide_t>=FADE:
             slide_i+=1
-            if slide_i>=len(HISTORIA):
+            if slide_i>=len(HISTORIA1):
                 estado="fade_historia_boss"
                 fade.start("out",dur=80)
             else:
                 slide_t=0.0; slide_fase="in"
 
 def render_historia():
+    
     draw_bg()
     for p in particulas: p.update(); p.draw(tela)
-    if slide_i>=len(HISTORIA): return
-    linhas  = HISTORIA[slide_i].split("\n")
+    if slide_i>=len(HISTORIA1): return
+    linhas  = HISTORIA1[slide_i].split("\n")
     lh      = f_historia.get_height()+8
     total_h = len(linhas)*lh
     y0      = MENU_H//2-total_h//2
@@ -391,12 +398,32 @@ def render_historia():
         s.blit(txt,(MENU_W//2-txt.get_width()//2, y0+i*lh))
     s.set_alpha(slide_alpha)
     tela.blit(s,(0,0))
-    n=len(HISTORIA)
+    n=len(HISTORIA1)
     for i in range(n):
         cor=(255,165,0) if i==slide_i else (60,45,20)
         pygame.draw.circle(tela,cor,(MENU_W//2-(n-1)*14+i*28,MENU_H-38),6)
     hint=f_pular.render("ESPACO ou ENTER para avançar",True,(130,100,60))
     tela.blit(hint,(MENU_W//2-hint.get_width()//2,MENU_H-20))
+
+def render_historia2(slide_i2, slide_alpha2, bg, surf):
+    surf.blit(bg if bg else _grad, (0,0))
+    if slide_i2 >= len(HISTORIA2): return
+    linhas = HISTORIA2[slide_i2].split("\n")
+    lh = f_historia.get_height()+8
+    total_h = len(linhas)*lh
+    y0 = MENU_H//2-total_h//2
+    s = pygame.Surface((MENU_W,MENU_H),pygame.SRCALPHA)
+    for i,linha in enumerate(linhas):
+        txt=f_historia.render(linha,True,COR_HISTORIA)
+        s.blit(txt,(MENU_W//2-txt.get_width()//2, y0+i*lh))
+    s.set_alpha(slide_alpha2)
+    surf.blit(s,(0,0))
+    n=len(HISTORIA2)
+    for i in range(n):
+        cor=(255,165,0) if i==slide_i2 else (60,45,20)
+        pygame.draw.circle(surf,cor,(MENU_W//2-(n-1)*14+i*28,MENU_H-38),6)
+    hint=f_pular.render("ESPACO ou ENTER para avançar",True,(130,100,60))
+    surf.blit(hint,(MENU_W//2-hint.get_width()//2,MENU_H-20))
 
 # ══════════════════════════════════════════════════════
 #  Boss — helpers de fallback
@@ -474,6 +501,11 @@ class Jogador:
         self.shoot_t=0.0; self.invuln_t=0.0
         self.dead=False; self.facing=1
         self.rect=pygame.Rect(x,y,self.w,self.h)
+        # Hitbox menor — só o corpo visível, ignora bordas transparentes do quadro
+        self._hb_mx = 20   # margem horizontal de cada lado
+        self._hb_my = 15   # margem vertical de cada lado
+        self.hitbox = pygame.Rect(x+self._hb_mx, y+self._hb_my,
+                                  self.w-self._hb_mx*2, self.h-self._hb_my*2)
     def update(self,dt,keys,projs):
         if self.dead: return
         mx=my=0
@@ -496,6 +528,8 @@ class Jogador:
             projs.append(Proj(px,py,PLAYER_PROJ_SPEED*self.facing,0,
                                None,8,PLAYER_PROJ_DMG,P_PROJ_COLOR,True))
         self.rect.update(int(self.x),int(self.y),self.w,self.h)
+        self.hitbox.update(int(self.x)+self._hb_mx, int(self.y)+self._hb_my,
+                           self.w-self._hb_mx*2, self.h-self._hb_my*2)
     def hit(self,dmg):
         if self.invuln_t>0 or self.dead: return
         self.hp-=dmg; self.invuln_t=0.65
@@ -504,7 +538,10 @@ class Jogador:
         if self.dead: return
         sp=self.img if self.img else make_player_surf(PLAYER_SIZE)
         if self.invuln_t>0 and int(self.invuln_t*20)%2==0:
-            sp=sp.copy(); sp.fill((255,120,120,120),special_flags=pygame.BLEND_RGBA_ADD)
+            sp=sp.copy()
+            mask=pygame.mask.from_surface(sp)
+            mask_surf=mask.to_surface(setcolor=(255,120,120,120),unsetcolor=(0,0,0,0))
+            sp.blit(mask_surf,(0,0),special_flags=pygame.BLEND_RGBA_ADD)
         if self.facing<0: sp=pygame.transform.flip(sp,True,False)
         surf.blit(sp,(int(self.x),int(self.y)))
 
@@ -531,7 +568,15 @@ class Aranha:
         if self.atk_t<=0:
             self.atk_t=random.uniform(*SPIDER_ATK_CD)
             self._shoot(jogador,projs)
-        self.rect.update(int(self.x),int(self.y),self.w,self.h)
+        # Hitbox menor que o sprite — ajuste a margem a gosto
+        margem_x = 80   # reduz N pixels de cada lado horizontalmente
+        margem_y = 60   # reduz N pixels de cada lado verticalmente
+        self.rect.update(
+            int(self.x) + margem_x,
+            int(self.y) + margem_y,
+            self.w - margem_x * 2,
+            self.h - margem_y * 2
+        )
     def _shoot(self,jogador,projs):
         if jogador.dead: return
         sx=self.x+self.w*0.55; sy=self.y+self.h*0.65
@@ -547,7 +592,12 @@ class Aranha:
     def draw(self,surf):
         if self.frames:
             fr=self.frames[int(self.fi)%len(self.frames)]
-            surf.blit(fr,(int(self.x),int(self.y)))
+            if self.flash_t > 0 and int(self.flash_t * 20) % 2 == 0:
+                fr = fr.copy()
+                mask = pygame.mask.from_surface(fr)
+                mask_surf = mask.to_surface(setcolor=(255,80,80,180), unsetcolor=(0,0,0,0))
+                fr.blit(mask_surf, (0,0), special_flags=pygame.BLEND_RGBA_ADD)
+            surf.blit(fr, (int(self.x), int(self.y)))
         else:
             pygame.draw.circle(surf,(20,20,20),(int(self.x+160),int(self.y+160)),100)
         bw,bh=420,18; bx=BOSS_W//2-bw//2; by=18
@@ -588,6 +638,8 @@ def run_boss():
     win_img  = load_img_path(BASE_DIR/"minha_imagem_final.png",(BOSS_W,BOSS_H))
     web_img  = load_img_path(ASSET_DIR/"projectiles"/"spider_web.png",(96,96))
     sp_frs   = load_frames(ASSET_DIR/"boss_spider","spider_idle_{}.png",(320,320))
+    gameover_img = load_img_path(ASSET_DIR/"backgrounds"/"gameover.png",(800, 500))
+    bg_historia2 = load_img_path(ASSET_DIR/"backgrounds"/"historia2.png", (MENU_W, MENU_H))
 
     jogador  = Jogador(150,BOSS_H-210,img=p_img)
     aranha   = Aranha(BOSS_W-420,40,sp_frs,web_img=web_img)
@@ -624,13 +676,13 @@ def run_boss():
                     aranha.hit(pr.damage)
                     if pr in projs: projs.remove(pr)
                     continue
-                if not pr.from_player and not jogador.dead and jogador.rect.colliderect(pr.getrect()):
+                if not pr.from_player and not jogador.dead and jogador.hitbox.colliderect(pr.getrect()):
                     jogador.hit(pr.damage)
                     if pr in projs: projs.remove(pr)
                     continue
             # Dano por contato direto com a aranha
             if not aranha.dead and not jogador.dead:
-                if aranha.rect.colliderect(jogador.rect):
+                if aranha.rect.colliderect(jogador.hitbox):
                     jogador.hit(SPIDER_BALL_DMG)
 
             if aranha.dead:  bstate="transition"; close_p=0.0
@@ -658,33 +710,61 @@ def run_boss():
         if bstate=="fadein":     bf.draw(tela_b,BOSS_W,BOSS_H)
 
         if bstate=="win":
-            if win_img: tela_b.blit(win_img,(0,0))
-            else:
-                tela_b.fill((15,12,20))
-                draw_text_boss(tela_b,"VITÓRIA!",72,(255,210,90),BOSS_W//2,BOSS_H//2-30)
-            draw_text_boss(tela_b,"Pressione qualquer tecla",26,UI_TEXT,BOSS_W//2,BOSS_H-36)
-            pygame.display.flip()
-            aguarda=True
-            while aguarda:
+    # Muda para tela menor e toca música da nova história
+            tela = pygame.display.set_mode((MENU_W, MENU_H))
+            stop_music(300)
+            play_music(MUSICA_FASE2)
+        # Variáveis da nova história
+            slide_i2=0; slide_t2=0.0; slide_alpha2=0; slide_fase2="in"
+            rodando2=True
+            while rodando2:
+                dt2=clock.tick(FPS)/1000.0
                 for ev in pygame.event.get():
                     if ev.type==pygame.QUIT: pygame.quit(); sys.exit()
-                    if ev.type in (pygame.KEYDOWN,pygame.MOUSEBUTTONDOWN): aguarda=False
-                clock.tick(FPS)
-            tela = pygame.display.set_mode((MENU_W,MENU_H))
+                    if ev.type==pygame.KEYDOWN and ev.key in (pygame.K_SPACE,pygame.K_RETURN):
+                        slide_i2+=1
+                        if slide_i2>=len(HISTORIA2):
+                            rodando2=False
+                        else:
+                            slide_t2=0.0; slide_alpha2=0; slide_fase2="in"
+        # Atualiza fade do slide
+                FADE=0.55; SHOW=TEMPO_SLIDE
+                slide_t2+=dt2
+                if slide_fase2=="in":
+                    slide_alpha2=min(255,int(255*slide_t2/FADE))
+                    if slide_t2>=FADE: slide_fase2="show"; slide_t2=0.0
+                elif slide_fase2=="show":
+                    slide_alpha2=255
+                    if slide_t2>=SHOW: slide_fase2="out"; slide_t2=0.0
+                elif slide_fase2=="out":
+                    slide_alpha2=max(0,255-int(255*slide_t2/FADE))
+                    if slide_t2>=FADE:
+                        slide_i2+=1
+                        if slide_i2>=len(HISTORIA2): rodando2=False
+                        else: slide_t2=0.0; slide_fase2="in"
+                render_historia2(slide_i2, slide_alpha2, bg_historia2, tela)
+                pygame.display.flip()
+    # Após a história, volta ao menu
+            tela = pygame.display.set_mode((MENU_W, MENU_H))
             return
 
         if bstate=="gameover":
             go_timer += dt
             prog = min(go_timer / DURACAO_GO, 1.0)
             # Render arena congelada + overlay
-            ov=pygame.Surface((BOSS_W,BOSS_H),pygame.SRCALPHA)
-            ov.fill((0,0,0,170)); tela_b.blit(ov,(0,0))
-            draw_text_boss(tela_b,"GAME OVER",72,(255,92,110),BOSS_W//2,BOSS_H//2-30)
-            draw_text_boss(tela_b,"Voltando ao menu...",28,UI_TEXT,BOSS_W//2,BOSS_H//2+40)
+            if gameover_img:
+                img_x = BOSS_W//2 - gameover_img.get_width()//2
+                img_y = BOSS_H//2 - gameover_img.get_height()//2
+                tela_b.blit(gameover_img, (img_x, img_y))
+            else:
+                ov=pygame.Surface((BOSS_W,BOSS_H),pygame.SRCALPHA)
+                ov.fill((0,0,0,170)); tela_b.blit(ov,(0,0))
+                draw_text_boss(tela_b,"GAME OVER",72,(255,92,110),BOSS_W//2,BOSS_H//2-30)
+                draw_text_boss(tela_b,"Voltando ao menu...",28,UI_TEXT,BOSS_W//2,BOSS_H//2+40)
             # Barra de progresso
-            bw=400; bh=8; bx=BOSS_W//2-bw//2; by=BOSS_H//2+80
-            pygame.draw.rect(tela_b,(60,20,20),(bx,by,bw,bh),border_radius=4)
-            pygame.draw.rect(tela_b,(255,92,110),(bx,by,int(bw*prog),bh),border_radius=4)
+            bw=400; bh=8; bx=BOSS_W//2-bw//2; by=600
+            pygame.draw.rect(tela_b,(100,40,0),(bx,by,bw,bh),border_radius=4)
+            pygame.draw.rect(tela_b,(255,140,0),(bx,by,int(bw*prog),bh),border_radius=4)
             # Fade final
             fd=pygame.Surface((BOSS_W,BOSS_H)); fd.fill((0,0,0)); fd.set_alpha(int(200*prog))
             tela_b.blit(fd,(0,0))
@@ -727,7 +807,7 @@ while True:
         if estado=="historia":
             if ev.type==pygame.KEYDOWN and ev.key in (pygame.K_SPACE,pygame.K_RETURN):
                 slide_i+=1
-                if slide_i>=len(HISTORIA):
+                if slide_i>=len(HISTORIA1):
                     estado="fade_historia_boss"
                     fade.start("out",dur=80)
                 else:
@@ -740,7 +820,7 @@ while True:
             estado="historia"
             slide_i=0; slide_t=0.0; slide_alpha=0; slide_fase="in"
             stop_music(400)
-            play_music(MUSICA_HISTORIA)
+            play_music(MUSICA_HISTORIA1)
             fade.start("in",dur=40)   # fade-in ao entrar na história
 
     elif estado=="historia":
