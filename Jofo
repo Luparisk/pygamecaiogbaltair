@@ -1,0 +1,3118 @@
+"""
+Halloween Adventures – Jogo de plataforma com 4 bosses temáticos de Halloween.
+Combina o menu visual do Código 1 com a jogabilidade do Código 2.
+"""
+
+# ── Imports padrão ─────────────────────────────────────────────────
+import pygame, sys, os, math, random
+from dataclasses import dataclass   # Permite criar classes simples de dados com @dataclass
+from pathlib import Path            # Manipulação de caminhos de arquivos de forma multiplataforma
+
+# ── Caminhos base do projeto ────────────────────────────────────────
+BASE_DIR  = Path(__file__).resolve().parent   # Pasta onde está este arquivo .py
+ASSET_DIR = BASE_DIR / "assets"               # Subpasta "assets" com imagens e sons
+
+#                                       ANIMAÇÃO DE SPRITES
+
+@dataclass
+class SpriteAnim:
+    """
+    Controla uma animação baseada em lista de frames (imagens).
+    fps: quantos frames de animação por segundo.
+    loop: se True, repete a animação; se False, para no último frame.
+    """
+    frames: list    # Lista de surfaces pygame (cada uma é um frame da animação)
+    fps: int = 10   # Velocidade da animação
+    loop: bool = True  # Repetir ou não
+
+    def get(self, tick):
+        """Retorna o frame correto para o tempo 'tick' informado."""
+        if not self.frames:
+            return None  # Sem frames, retorna nada
+        if self.loop:
+            # Cicla entre os frames infinitamente
+            idx = int(tick * self.fps) % len(self.frames)
+        else:
+            # Para no último frame quando não faz loop
+            idx = min(len(self.frames) - 1, int(tick * self.fps))
+        return self.frames[idx]
+
+
+#                                       FUNÇÕES DE CARREGAMENTO DE IMAGENS
+
+
+def load_image(path, size=None):
+    """
+    Carrega uma imagem de 'path'. Se 'size' for fornecido, redimensiona.
+    Retorna None se o arquivo não existir ou der erro.
+    """
+    if not path or not Path(path).exists():
+        return None
+    try:
+        img = pygame.image.load(str(path)).convert_alpha()  # Carrega com canal alpha (transparência)
+        if size:
+            img = pygame.transform.smoothscale(img, size)   # Redimensiona suavemente
+        return img
+    except:
+        return None
+
+
+def load_folder_frames(folder: Path, size=None):
+    """
+    Carrega todos os frames de animação de uma pasta.
+    Ordena os arquivos alfabeticamente e retorna uma lista de surfaces.
+    Aceita .png, .jpg e .jpeg.
+    """
+    frames = []
+    if not folder.exists():
+        return frames  # Retorna lista vazia se pasta não existe
+    # Filtra apenas arquivos de imagem e ordena pelo nome
+    files = sorted([p for p in folder.iterdir() if p.suffix.lower() in (".png", ".jpg", ".jpeg")])
+    for p in files:
+        try:
+            img = pygame.image.load(str(p)).convert_alpha()
+            if size:
+                img = pygame.transform.smoothscale(img, size)
+            frames.append(img)
+        except:
+            pass  # Ignora arquivos corrompidos
+    return frames
+
+
+# Controle de direção do sprite 
+# Se False: o sprite original olha para a ESQUERDA (o padrão do projeto)
+SPRITE_FACES_RIGHT = False
+
+def flip_if_needed(img, facing):
+    """
+    Espelha horizontalmente a imagem dependendo da direção do personagem.
+    'facing' > 0 = indo para a direita.
+    Garante que o sprite sempre olhe na direção do movimento.
+    """
+    if img is None:
+        return None
+    should_flip = (facing > 0) if not SPRITE_FACES_RIGHT else (facing < 0)
+    return pygame.transform.flip(img, True, False) if should_flip else img
+
+
+def center_blit(surf, img, center):
+    """
+    Desenha 'img' em 'surf' centralizado no ponto 'center'.
+    Atalho comum para evitar cálculos manuais de posição.
+    """
+    if img is None:
+        return
+    rect = img.get_rect(center=center)
+    surf.blit(img, rect)
+
+
+
+#                                                   CONSTANTES GERAIS
+
+
+TITULO_JANELA  = "Halloween Adventures"  # Título da janela
+FPS            = 60                      # Taxa de quadros por segundo
+MENU_W, MENU_H = 1280, 720              # Resolução do menu
+BOSS_W, BOSS_H = 1280, 720             # Resolução das lutas contra boss
+
+# Arquivos de mídia 
+IMAGEM_LOGO  = "LOGO.png"       # Logo da tela inicial
+IMAGEM_BOTAO = "BOTAO.png"     # Imagem do botão "Iniciar"
+IMAGEM_FUNDO = "castelo.jpg"   # Imagem de fundo do menu
+
+# Tamanhos e posições do menu 
+LOGO_W, LOGO_H   = 460, 460    # Tamanho do logo
+BOTAO_W, BOTAO_H = 250, 115   # Tamanho do botão
+LOGO_POS_Y  = 0.04             # Posição Y do logo (4% da altura da tela)
+BOTAO_POS_Y = 0.84             # Posição Y do botão (84% da altura da tela)
+
+# Textos de fallback (caso as imagens não carreguem) 
+TITULO_FALLBACK = "HALLOWEEN ADVENTURES"
+BOTAO_FALLBACK  = "INICIAR"
+
+# Modo de debug: jogador invencível 
+DEBUG_INVENCIBLE = True  # Com True, o jogador não perde HP (útil para testes)
+
+
+#  Paleta de cores do menu 
+COR_FUNDO_TOPO = (5,   0,  15)    # Cor do topo do gradiente de fundo
+COR_FUNDO_BASE = (20,  5,  40)    # Cor da base do gradiente
+COR_TITULO_FB  = (255, 160, 20)   # Cor do título fallback (laranja)
+COR_BOTAO_FB   = (120,  50, 10)   # Cor do botão sem hover
+COR_BOTAO_HV   = (200,  90, 20)   # Cor do botão com hover
+COR_BOTAO_TXT  = (255, 220, 80)   # Cor do texto do botão
+COR_PARTICULA  = (255, 120, 20)   # Cor das partículas flutuantes do menu
+COR_HISTORIA   = (255, 165,  0)   # Cor do texto nas telas de história
+
+# Paleta geral de cores 
+WHITE      = (255, 255, 255)
+BLACK      = (  0,   0,   0)
+RED        = (220,  40,  40)
+DARK_RED   = (140,   0,   0)
+GREEN      = ( 50, 200,  80)
+BLUE       = ( 60, 120, 220)
+YELLOW     = (255, 220,  50)
+ORANGE     = (255, 140,   0)
+PURPLE     = (180,  60, 220)
+PINK       = (255, 100, 180)
+CYAN       = ( 60, 220, 220)
+GRAY       = (120, 120, 120)
+LIGHT_GRAY = (200, 200, 200)
+GOLD       = (255, 200,   0)
+DARK       = ( 20,  20,  30)
+BOLT_C     = (200, 240, 255)  # Cor dos raios elétricos do boss Frank
+
+
+
+#                                             ARQUIVOS DE MÚSICA E SOM
+
+
+MUSICA_MENU      = "fundo_inicio.mp3"   # Trilha do menu principal
+SOM_CLIQUE       = "clique.mp3"          # Efeito sonoro ao clicar no botão
+MUSICA_HISTORIA1 = "historia.mp3"        # Trilha das telas de história iniciais
+MUSICA_BOSS      = "aranha.mp3"          # Trilha das lutas contra boss
+MUSICA_FASE2     = "historia2.mp3"       # Trilha das histórias entre bosses
+
+
+
+#                                             SLIDES DA HISTÓRIA INICIAL
+
+
+# Cada string é um slide exibido na tela de história.
+# "\n" separa linhas dentro do mesmo slide.
+HISTORIA = [
+    "Durante o Halloween, quatro crianças fantasiadas sairam para aproveitar o Halloween \n Vestidas de vampiro, dragão, bruxa e esqueleto",
+    "A vila de Ravenmoor está em pânico,\n Lá do fundo um demônio se aproxima para atacar a cidade!",
+    "Nossos heróis tentam fugir\nPorém, um dos garotos tenta enfrentar a criatura para proteger os amigos!",
+    "O garoto, porém, falha... \nE em punição, o demônio transforma ele e seus amigos nas criaturas em que estavam fantasiadas.",
+    "Para retornar sua verdadeira forma\nOs garotos irão enfrentar o demônio e seus aliados!.",
+]
+
+TEMPO_SLIDE = 3.5  # Tempo (em segundos) que cada slide fica visível
+
+
+
+#                                                CONSTANTES DE GAMEPLAY
+
+
+GROUND_Y = BOSS_H - 80  # Posição Y do chão (80px acima da borda inferior da tela)
+
+# Posições X das colunas do laboratório do Dr. Frankenstein
+TESLA_XS = [160, BOSS_W // 2, BOSS_W - 160]
+
+# Plataformas da fase do palhaço (Rect = posição x, y, largura, altura)
+CLOWN_PLATFORMS = [
+    pygame.Rect(100, 500, 160, 18),
+    pygame.Rect(360, 430, 160, 18),
+    pygame.Rect(700, 360, 160, 18),
+    pygame.Rect(980, 460, 160, 18),
+    pygame.Rect(250, 310, 140, 18),
+    pygame.Rect(620, 260, 180, 18),
+]
+
+
+
+#                                           DEFINIÇÃO DOS PERSONAGENS JOGÁVEIS
+
+
+# Cada dicionário define um personagem com seus atributos de gameplay e visual.
+CHARACTERS = [
+    {
+        "name": "Bruxinha",
+        "asset_key": "bruxinha",            # Nome da pasta de assets
+        "select_sprite": "characters/bruxinha/select.png",  # Sprite na tela de seleção
+        "body_color": (150, 70, 200),        # Cor do corpo (fallback sem sprite)
+        "head_color": (230, 200, 170),       # Cor da cabeça (fallback)
+        "bullet_color": (180, 220, 255),     # Cor dos projéteis
+        "speed": 5,                          # Velocidade de movimento
+        "max_hp": 200,                       # HP máximo
+        "shot_style": "potion",             # Tipo de ataque
+        "shot_cd": 14,                      # Cooldown entre tiros (em frames)
+        "shot_speed": 15,                   # Velocidade do projétil
+        "shot_damage": 8,                   # Dano por projétil
+        "bullet_radius": 7,                 # Raio visual do projétil
+    },
+    {
+        "name": "Vampiro",
+        "asset_key": "vampiro",
+        "select_sprite": "characters/vampiro/select.png",
+        "body_color": (120, 20, 40),
+        "head_color": (220, 190, 170),
+        "bullet_color": (255, 80, 120),
+        "speed": 5,
+        "max_hp": 200,
+        "shot_style": "triple",   # Dispara 3 projéteis em leque
+        "shot_cd": 24,
+        "shot_speed": 10,
+        "shot_damage": 6,
+        "bullet_radius": 5,
+    },
+    {
+        "name": "Dragaozinho",
+        "asset_key": "dragaozinho",
+        "select_sprite": "characters/dragaozinho/select.png",
+        "body_color": (40, 160, 90),
+        "head_color": (255, 170, 70),
+        "bullet_color": (255, 120, 40),
+        "speed": 5,
+        "max_hp": 200,
+        "shot_style": "fireball",  # Projétil carregável: segura o clique para aumentar dano
+        "shot_cd": 16,
+        "shot_speed": 0,           # Velocidade definida dinamicamente pelo carregamento
+        "shot_damage": 0,
+        "bullet_radius": 0,
+        "max_charge_frames": 60,   # Tempo máximo de carregamento (frames)
+        "min_fire_speed": 10,      # Velocidade mínima (sem carregar)
+        "max_fire_speed": 20,      # Velocidade máxima (carregado)
+        "min_fire_damage": 10,     # Dano mínimo
+        "max_fire_damage": 30,     # Dano máximo
+        "min_fire_radius": 8,      # Raio mínimo do projétil
+        "max_fire_radius": 18,     # Raio máximo
+    },
+    {
+        "name": "Esqueleto",
+        "asset_key": "esqueleto",
+        "select_sprite": "characters/esqueleto/select.png",
+        "body_color": (210, 210, 210),
+        "head_color": (245, 245, 245),
+        "bullet_color": (220, 220, 220),
+        "speed": 5,
+        "max_hp": 200,
+        "shot_style": "boomerang",  # Projétil que retorna ao jogador
+        "shot_cd": 22,
+        "shot_speed": 12,
+        "shot_damage": 7,
+        "bullet_radius": 5,
+    },
+]
+
+# Mapa de nomes de armas para exibição no HUD
+WEAPON_NAMES = {"potion":"Potion","triple":"Triple Shot",
+                "fireball":"Fireball","boomerang":"Boomerang"}
+
+
+
+#                                       SLIDES DE HISTÓRIA ENTRE BOSSES
+
+
+# Exibidos após cada boss ser derrotado, narrando a progressão da história.
+STORY_AFTER_SPIDER = [
+    "A aranha foi um inimigo fácil para os heróis, mas ainda não acabou.",
+    "Em direção ao circo, risadas macabras ecoam e o palhaço se prepara para atacar.",
+]
+STORY_AFTER_CLOWN = [
+    "O palhaço cai, mas o circo era apenas a primeira camada do pesadelo.",
+    "A distância, um laboratório crepita com vida elétrica.",
+    "Dr. Frankenstein já está preparando o próximo experimento.",
+]
+STORY_AFTER_FRANK = [
+    "O laboratório entra em silêncio... mas algo ainda observa no escuro.",
+    "Frankenstein não era o fim.",
+    "O Lord of Nightmares desperta para o confronto final.",
+]
+STORY_AFTER_LORD = [
+    "O pesadelo enfim acabou.",
+    "Nossos garotos conseguiram derrotar o Lord of Nighmares e retornar sua forma humana!",
+    "Após isso voltaram para casa, sabendo que venceram e protegeram a cidade de Ravenmoor.",
+]
+
+
+
+#                                                   INICIALIZAÇÃO DO PYGAME
+
+
+pygame.init()  # Inicializa todos os módulos do pygame
+
+# Tenta inicializar o sistema de áudio; desativa se não for possível
+try:
+    pygame.mixer.init()
+    SOM_ATIVO = True
+except pygame.error:
+    SOM_ATIVO = False
+
+tela    = pygame.display.set_mode((MENU_W, MENU_H))  # Cria a janela principal
+pygame.display.set_caption(TITULO_JANELA)             # Define o título da janela
+relogio = pygame.time.Clock()                         # Controle de FPS
+
+
+# Fontes
+
+def fnt(tam, bold=False):
+    """Tenta carregar Arial Black; usa fonte padrão do pygame se não disponível."""
+    try:    return pygame.font.SysFont("Arial Black", tam, bold=bold)
+    except: return pygame.font.Font(None, tam)
+
+# Fontes para o menu e história
+f_titulo   = fnt(72, bold=True)   # Título principal
+f_sub      = fnt(28)              # Subtítulos e textos de apoio
+f_botao    = fnt(30, bold=True)   # Texto do botão
+f_historia = fnt(26)              # Texto dos slides de história
+f_pular    = fnt(18)              # Dica "pressione para avançar"
+
+# Fontes para o gameplay (HUD, danos, etc.)
+font_big   = pygame.font.SysFont("impact", 52)
+font_med   = pygame.font.SysFont("impact", 32)
+font_small = pygame.font.SysFont("arial", 22)
+font_tiny  = pygame.font.SysFont("arial", 16)
+font_lg    = pygame.font.SysFont("monospace", 36, bold=True)
+font_sm    = pygame.font.SysFont("monospace", 20)
+
+
+
+#                                                     FUNÇÕES DE SOM
+
+
+def load_sound(nome):
+    """Carrega um efeito sonoro da pasta base. Retorna None se não encontrar."""
+    if not nome or not SOM_ATIVO:
+        return None
+    p = BASE_DIR / nome
+    if not p.exists():
+        return None
+    try:
+        return pygame.mixer.Sound(str(p))
+    except:
+        return None
+
+
+def play_music(nome):
+    """Carrega e toca uma música em loop infinito."""
+    if not nome or not SOM_ATIVO:
+        return
+    p = BASE_DIR / nome
+    if not p.exists():
+        return
+    try:
+        pygame.mixer.music.load(str(p))
+        pygame.mixer.music.play(-1)  # -1 = loop infinito
+    except:
+        pass
+
+def stop_music(fade_ms=300):
+    """Para a música atual com fade out de 'fade_ms' milissegundos."""
+    if not SOM_ATIVO:
+        return
+    try:
+        pygame.mixer.music.fadeout(fade_ms)
+    except:
+        pass
+
+som_clique = load_sound(SOM_CLIQUE)  # Carrega o som do clique do botão
+
+
+
+#                                            CARREGAMENTO DE IMAGENS DO MENU
+
+
+def load_img(nome, w, h):
+    """Carrega imagem pelo nome do arquivo (relativo à BASE_DIR) e redimensiona."""
+    if not nome: return None
+    p = BASE_DIR / nome
+    if not p.exists(): return None
+    try:
+        img = pygame.image.load(str(p)).convert_alpha()
+        return pygame.transform.smoothscale(img, (w, h))
+    except: return None
+
+def load_img_path(p, size=None):
+    """Carrega imagem por caminho absoluto/Path e opcionalmente redimensiona."""
+    if not p or not Path(p).exists(): return None
+    try:
+        img = pygame.image.load(str(p)).convert_alpha()
+        if size: img = pygame.transform.smoothscale(img, size)
+        return img
+    except: return None
+
+
+# Carrega as imagens principais do menu
+img_logo  = load_img(IMAGEM_LOGO,  LOGO_W,  LOGO_H)
+img_botao = load_img(IMAGEM_BOTAO, BOTAO_W, BOTAO_H)
+
+# Cria versão "hover" do botão (levemente mais brilhante)
+img_botao_hv = None
+if img_botao:
+    img_botao_hv = img_botao.copy()
+    brl = pygame.Surface((BOTAO_W, BOTAO_H), pygame.SRCALPHA)
+    brl.fill((80, 40, 0, 55))         # Camada semitransparente amarronzada
+    img_botao_hv.blit(brl, (0, 0))   # Aplica sobre a cópia
+
+img_fundo = load_img(IMAGEM_FUNDO, MENU_W, MENU_H)  # Imagem de fundo do menu
+
+# Cria gradiente de fundo como fallback (caso castelo.jpg não exista)
+_grad = pygame.Surface((MENU_W, MENU_H))
+for _y in range(MENU_H):
+    _t = _y / MENU_H  # Progresso de 0 a 1 da linha atual
+    # Interpola linearmente entre a cor do topo e a da base
+    _c = tuple(int(COR_FUNDO_TOPO[i]+(COR_FUNDO_BASE[i]-COR_FUNDO_TOPO[i])*_t) for i in range(3))
+    pygame.draw.line(_grad, _c, (0,_y), (MENU_W,_y))
+
+
+#                                PRÉ-CARREGAMENTO DE SPRITES DOS PERSONAGENS
+
+
+# Para cada personagem, carrega todas as animações da pasta assets/characters/<key>/<estado>/
+PLAYER_SPRITES = {}
+for char in CHARACTERS:
+    key = char["asset_key"]
+    PLAYER_SPRITES[key] = {
+        "idle":  SpriteAnim(load_folder_frames(ASSET_DIR / f"characters/{key}/idle",  (96, 96)), fps=8),   # Parado
+        "run":   SpriteAnim(load_folder_frames(ASSET_DIR / f"characters/{key}/run",   (96, 96)), fps=12),  # Correndo
+        "jump":  SpriteAnim(load_folder_frames(ASSET_DIR / f"characters/{key}/jump",  (96, 96)), fps=10, loop=False),  # Pulando
+        "land":  SpriteAnim(load_folder_frames(ASSET_DIR / f"characters/{key}/land",  (96, 96)), fps=12, loop=False),  # Aterrissando
+        "shoot": SpriteAnim(load_folder_frames(ASSET_DIR / f"characters/{key}/shoot", (96, 96)), fps=12, loop=False),  # Atirando
+        "hurt":  SpriteAnim(load_folder_frames(ASSET_DIR / f"characters/{key}/hurt",  (96, 96)), fps=10, loop=False),  # Tomando dano
+    }
+
+
+
+#                                 PRÉ-CARREGAMENTO DE VISUAIS DOS BOSSES
+
+
+# Dicionário aninhado: cada boss tem seu background, sprite animado e projéteis.
+BOSS_VISUALS = {
+    "spider": {
+        "bg":  load_image(ASSET_DIR / "bosses/spider/bg/bg.png", (BOSS_W, BOSS_H)),          # Fundo da fase
+        "boss": SpriteAnim(load_folder_frames(ASSET_DIR / "bosses/spider/boss", (240, 180)), fps=8),  # Sprite animado
+        "web":  load_image(ASSET_DIR / "bosses/spider/web/web.png", (28, 28)),               # Projétil (teia)
+    },
+    "clown": {
+        "bg":           load_image(ASSET_DIR / "bosses/clown/bg/bg.jpeg", (BOSS_W, BOSS_H)),
+        "boss":         SpriteAnim(load_folder_frames(ASSET_DIR / "bosses/clown/boss", (350, 400)), fps=8),
+        "balloon_up":   load_image(ASSET_DIR / "bosses/clown/balloon_up/balloon_up.png", (44, 44)),    # Balão que sobe
+        "balloon_track":load_image(ASSET_DIR / "bosses/clown/balloon_track/balloon_track.png", (44, 44)),  # Balão rastreador
+        "spike":        load_image(ASSET_DIR / "bosses/clown/spike/spike.png", (40, 40)),              # Espinho
+        "ball":         load_image(ASSET_DIR / "bosses/clown/ball/ball.png", (28, 28)),                # Bola de ataque
+    },
+    "frank": {
+        "bg":          load_image(ASSET_DIR / "bosses/frank/lab_bg/lab_bg.jpg", (BOSS_W, BOSS_H)),
+        "doctor":      SpriteAnim(load_folder_frames(ASSET_DIR / "bosses/frank/boss_doctor", (175, 200)), fps=8),   # Fase 1: doutor
+        "monster":     SpriteAnim(load_folder_frames(ASSET_DIR / "bosses/frank/boss_monster", (BOSS_W//2, BOSS_H//2-20)), fps=8),  # Fase 2: monstro
+        "bullet":      load_image(ASSET_DIR / "bosses/frank/bullet/bullet.png", (44, 44)),
+        "hand_left":   load_image(ASSET_DIR / "bosses/frank/hand_left/hand_left.png", (110, 90)),
+        "hand_right":  load_image(ASSET_DIR / "bosses/frank/hand_right/hand_right.png", (110, 90)),
+        "pillar":      load_image(ASSET_DIR / "bosses/frank/pillar/pillar.png", (140, 280)),  # Coluna Tesla
+    },
+    "lord": {
+        "bg1":  load_image(ASSET_DIR / "bosses/lord/phase1_bg/phase1_bg.jpeg", (BOSS_W, BOSS_H)),  # Fundo fase 1
+        "bg2":  load_image(ASSET_DIR / "bosses/lord/phase2_bg/phase2_bg.jpeg", (BOSS_W, BOSS_H)),  # Fundo fase 2
+        "bg3":  load_image(ASSET_DIR / "bosses/lord/phase3_bg/phase3_bg.jpeg", (BOSS_W, BOSS_H)),  # Fundo fase 3
+        "boss": SpriteAnim(load_folder_frames(ASSET_DIR / "bosses/lord/boss", (220, 320)), fps=8),
+        "bolt": load_image(ASSET_DIR / "bosses/lord/bolt/bolt.png", (24, 24)),     # Raio
+        "wave": load_image(ASSET_DIR / "bosses/lord/wave/wave.png", (300, 40)),    # Onda horizontal
+        "rain": load_image(ASSET_DIR / "bosses/lord/rain/rain.png", (16, 22)),     # Chuva de projéteis
+    },
+}
+
+
+
+#                                         FUNÇÕES DE DESENHO DO MENU
+
+
+def draw_bg(surf=None):
+    """Desenha o fundo do menu (imagem ou gradiente fallback)."""
+    if surf is None:
+        surf = tela
+    surf.blit(img_fundo if img_fundo else _grad, (0, 0))
+
+def draw_menu_base(surf, tempo):
+    """
+    Desenha a camada base do menu: fundo + partículas + logo flutuante.
+    'tempo' é o tempo acumulado em segundos, usado para animações.
+    """
+    draw_bg(surf)
+
+    # Atualiza e desenha cada partícula flutuante
+    for p in particulas:
+        p.update()
+        p.draw(surf)
+
+    # Efeito de flutuação senoidal do logo
+    flutuacao = math.sin(tempo * 1.35) * 9
+    logo_y = int(MENU_H * LOGO_POS_Y + flutuacao)
+
+    if img_logo:
+        lx = MENU_W // 2 - LOGO_W // 2
+        # Sombra semitransparente do logo
+        sh = pygame.Surface((LOGO_W, LOGO_H), pygame.SRCALPHA)
+        sh.blit(img_logo, (0, 0))
+        sh.set_alpha(65)
+        surf.blit(sh, (lx + 6, logo_y + 10))  # Offset para simular sombra
+        surf.blit(img_logo, (lx, logo_y))
+    else:
+        # Fallback: renderiza o título como texto
+        ts = f_titulo.render(TITULO_FALLBACK, True, COR_TITULO_FB)
+        ss = f_titulo.render(TITULO_FALLBACK, True, (0, 0, 0))  # Sombra preta
+        surf.blit(ss, (MENU_W // 2 - ss.get_width() // 2 + 3, logo_y + 3))
+        surf.blit(ts, (MENU_W // 2 - ts.get_width() // 2, logo_y))
+
+
+
+#                                          SISTEMA DE PARTÍCULAS DO MENU
+
+
+class Particula:
+    """
+    Pequenas partículas laranja que sobem pela tela do menu,
+    criando um efeito de brasas ou chamas.
+    """
+    def __init__(self, rand=True):
+        self.reset(rand)
+
+    def reset(self, rand=False):
+        """Reposiciona a partícula. Se rand=True, começa em posição aleatória na tela."""
+        self.x     = random.uniform(0, MENU_W)
+        self.y     = random.uniform(0, MENU_H) if rand else MENU_H + 4  # Começa abaixo da tela
+        self.r     = random.uniform(1.0, 3.0)    # Raio
+        self.vel   = random.uniform(0.3, 1.0)    # Velocidade de subida
+        self.alpha = random.randint(50, 170)     # Transparência
+
+    def update(self):
+        """Sobe a partícula; reinicia quando sai pelo topo da tela."""
+        self.y -= self.vel
+        if self.y < -5: self.reset()
+
+    def draw(self, surf):
+        """Desenha a partícula como um círculo semitransparente."""
+        s = pygame.Surface((int(self.r*2+2), int(self.r*2+2)), pygame.SRCALPHA)
+        pygame.draw.circle(s, (*COR_PARTICULA, self.alpha),
+                           (int(self.r)+1, int(self.r)+1), int(self.r))
+        surf.blit(s, (int(self.x-self.r), int(self.y-self.r)))
+
+# Cria o pool de 90 partículas já distribuídas pela tela
+particulas = [Particula(rand=True) for _ in range(90)]
+
+
+#                                                     BOTÃO DO MENU
+
+
+class Botao:
+    """
+    Botão interativo do menu principal com animações de hover,
+    brilho pulsante e partículas ao passar o mouse.
+    """
+    def __init__(self):
+        self.cx   = MENU_W//2                                          # Centro X
+        self.cy   = int(MENU_H*BOTAO_POS_Y)                           # Centro Y
+        self.w0   = BOTAO_W; self.h0 = BOTAO_H                       # Tamanho base
+        self.rect = pygame.Rect(self.cx-self.w0//2, self.cy-self.h0//2, self.w0, self.h0)
+        self.hover = False   # Se o mouse está sobre o botão
+        self.t = 0.0         # Tempo acumulado para animações
+
+    def update(self, mpos):
+        """Atualiza estado de hover e avança o timer de animação."""
+        self.hover = self.rect.collidepoint(mpos)
+        self.t += 0.07
+
+    def clicado(self, ev):
+        """Retorna True se o botão foi clicado com o botão esquerdo do mouse."""
+        return (ev.type==pygame.MOUSEBUTTONDOWN and ev.button==1
+                and self.rect.collidepoint(ev.pos))
+
+    def draw(self, surf):
+        """Desenha o botão com efeitos de escala, brilho e partículas."""
+        # Escala levemente maior ao hover; pulsa suavemente sem hover
+        esc = 1.06+0.01*math.sin(self.t*3) if self.hover else 1.0+0.03*math.sin(self.t)
+        w=int(self.w0*esc); h=int(self.h0*esc)
+        rx=self.cx-w//2;    ry=self.cy-h//2
+
+        if img_botao:
+            img = img_botao_hv if (self.hover and img_botao_hv) else img_botao
+            sc  = pygame.transform.smoothscale(img,(w,h))
+
+            # Sombra do botão
+            sh  = pygame.Surface((w,h),pygame.SRCALPHA)
+            sh.blit(sc,(0,0)); sh.set_alpha(70)
+            surf.blit(sh,(rx+8,ry+10))
+
+            if self.hover:
+                # Halo laranja pulsante ao redor do botão
+                ga = int(80+60*math.sin(self.t*4))
+                glow = pygame.Surface((w+20,h+20),pygame.SRCALPHA)
+                pygame.draw.rect(glow,(255,140,0,ga),(0,0,w+20,h+20),border_radius=18)
+                surf.blit(glow,(rx-10,ry-10))
+
+            surf.blit(sc,(rx,ry))
+
+            # Partículas douradas ao hover
+            if self.hover and int(self.t*10)%3==0:
+                for _ in range(2):
+                    sx=rx+random.randint(0,w); sy=ry+random.randint(0,h)
+                    sr=random.randint(2,5); sa=random.randint(120,220)
+                    ps=pygame.Surface((sr*2,sr*2),pygame.SRCALPHA)
+                    pygame.draw.circle(ps,(255,220,80,sa),(sr,sr),sr)
+                    surf.blit(ps,(sx-sr,sy-sr))
+        else:
+            # Fallback: botão desenhado geometricamente
+            cor  = COR_BOTAO_HV if self.hover else COR_BOTAO_FB
+            bor  = (255,160,30) if self.hover else (180,100,20)
+            pygame.draw.rect(surf,(0,0,0),(rx+4,ry+4,w,h),border_radius=14)  # Sombra
+            pygame.draw.rect(surf,cor,(rx,ry,w,h),border_radius=14)
+            pygame.draw.rect(surf,bor,(rx,ry,w,h),width=2,border_radius=14)  # Borda
+            txt=f_botao.render(BOTAO_FALLBACK,True,COR_BOTAO_TXT)
+            surf.blit(txt,(rx+(w-txt.get_width())//2,ry+(h-txt.get_height())//2))
+
+botao = Botao()  # Instância global do botão
+
+
+
+#                                                     RENDER DO MENU
+
+
+def render_menu(mouse, tempo):
+    """Desenha o menu completo: fundo, partículas, logo e botão."""
+    draw_menu_base(tela, tempo)
+    botao.update(mouse)
+    botao.draw(tela)
+
+
+
+#                                          UTILITÁRIOS DE TELA (SCREEN SHAKE)
+
+
+SHAKE_FRAMES = 0   # Frames restantes de tremida de tela
+SHAKE_POWER  = 0   # Intensidade do tremor
+
+def add_screen_shake(frames=8, power=5):
+    """Ativa o efeito de tremida de tela por 'frames' frames com intensidade 'power'."""
+    global SHAKE_FRAMES, SHAKE_POWER
+    SHAKE_FRAMES = max(SHAKE_FRAMES, frames)
+    SHAKE_POWER  = max(SHAKE_POWER, power)
+
+def get_screen_shake_offset():
+    """
+    Retorna o offset aleatório (dx, dy) para deslocar a tela.
+    Decrementa o contador a cada chamada.
+    """
+    global SHAKE_FRAMES, SHAKE_POWER
+    if SHAKE_FRAMES <= 0: return 0,0
+    SHAKE_FRAMES -= 1
+    return random.randint(-SHAKE_POWER,SHAKE_POWER), random.randint(-SHAKE_POWER,SHAKE_POWER)
+
+#                                          FUNÇÕES MATEMÁTICAS UTILITÁRIAS
+
+def clamp(v,lo,hi): return max(lo,min(hi,v))     # Limita v entre lo e hi
+def lerp(a,b,t):    return a+(b-a)*t              # Interpolação linear entre a e b
+def normalize(dx,dy):
+    """Normaliza um vetor (dx, dy) para comprimento 1. Retorna (0,0) se comprimento 0."""
+    d=math.hypot(dx,dy)
+    return (0.0,0.0) if d==0 else (dx/d,dy/d)
+
+#                                          FUNÇÕES DE DESENHO DE TEXTO
+
+def draw_text(surf,text,font,color,cx,cy):
+    """Desenha texto centralizado no ponto (cx, cy)."""
+    img=font.render(text,True,color)
+    surf.blit(img,img.get_rect(center=(cx,cy)))
+
+def draw_text_shadow(surf,text,font,color,x,y,shadow_col=BLACK):
+    """Desenha texto com sombra preta deslocada 2px para baixo e direita."""
+    sh=font.render(text,True,shadow_col)
+    surf.blit(sh,(x+2,y+2))
+    img=font.render(text,True,color)
+    surf.blit(img,(x,y))
+
+def draw_gradient_rect(surf,color_top,color_bot,rect):
+    """Preenche um retângulo com gradiente vertical de color_top a color_bot."""
+    x,y,w,h=rect
+    for i in range(h):
+        t=i/max(1,h-1)
+        c=(int(color_top[0]+(color_bot[0]-color_top[0])*t),
+           int(color_top[1]+(color_bot[1]-color_top[1])*t),
+           int(color_top[2]+(color_bot[2]-color_top[2])*t))
+        pygame.draw.line(surf,c,(x,y+i),(x+w,y+i))
+
+def wrap_text(text,font,max_width):
+    """
+    Quebra 'text' em linhas que cabem dentro de 'max_width' pixels.
+    Retorna lista de strings.
+    """
+    words=text.split(); lines=[]; current=""
+    for word in words:
+        test=word if not current else current+" "+word
+        if font.size(test)[0]<=max_width: current=test
+        else:
+            if current: lines.append(current)
+            current=word
+    if current: lines.append(current)
+    return lines
+
+#                                          HUD (Heads-Up Display) – ELEMENTOS VISUAIS DE INTERFACE
+
+def draw_heart(surf,x,y,filled=True):
+    """Desenha um coração na posição (x,y). Vermelho=cheio, escuro=vazio."""
+    col=RED if filled else DARK_RED
+    pygame.draw.circle(surf,col,(x-6,y-4),6)   # Lobo esquerdo
+    pygame.draw.circle(surf,col,(x+6,y-4),6)   # Lobo direito
+    pygame.draw.polygon(surf,col,[(x-12,y-1),(x+12,y-1),(x,y+14)])  # Ponta inferior
+
+def draw_character_portrait(surf,char,x,y,scale=1.0,facing=1):
+    """
+    Desenha um retrato geométrico do personagem (fallback sem sprites).
+    Cada personagem tem detalhes únicos (chapéu, asas, cauda, etc.).
+    """
+    w=int(40*scale); h=int(52*scale)
+    body=pygame.Rect(x+int(4*scale),y+int(16*scale),w,h)
+    pygame.draw.rect(surf,char["body_color"],body,border_radius=max(2,int(5*scale)))
+    head=pygame.Rect(x+int(8*scale),y,w-int(8*scale),int(20*scale))
+    pygame.draw.rect(surf,char["head_color"],head,border_radius=max(2,int(5*scale)))
+    # Olho (direção determinada por 'facing')
+    pygame.draw.circle(surf,BLACK,(head.centerx-int(5*facing*scale),head.centery),max(1,int(2*scale)))
+    pygame.draw.circle(surf,BLACK,(head.centerx+int(5*facing*scale),head.centery),max(1,int(2*scale)))
+
+    name=char["name"]
+    if name=="Bruxinha":
+        # Chapéu pontiagudo de bruxa
+        hat=[(head.centerx-int(14*scale),head.top+2),(head.centerx+int(14*scale),head.top+2),(head.centerx,head.top-int(20*scale))]
+        pygame.draw.polygon(surf,PURPLE,hat)
+        pygame.draw.circle(surf,YELLOW,(head.centerx,head.top-int(22*scale)),max(2,int(3*scale)))
+    elif name=="Vampiro":
+        # Capa do vampiro (dois triângulos laterais)
+        pygame.draw.polygon(surf,(60,60,80),[(body.left-int(5*scale),body.top+int(12*scale)),(body.left+int(10*scale),body.top+int(40*scale)),(body.left+int(16*scale),body.top+int(10*scale))])
+        pygame.draw.polygon(surf,(60,60,80),[(body.right+int(5*scale),body.top+int(12*scale)),(body.right-int(10*scale),body.top+int(40*scale)),(body.right-int(16*scale),body.top+int(10*scale))])
+    elif name=="Dragaozinho":
+        # Asas do dragão
+        pygame.draw.polygon(surf,(20,120,60),[(body.left-int(8*scale),body.top+int(10*scale)),(body.left+int(8*scale),body.top+int(28*scale)),(body.left+int(10*scale),body.top+int(2*scale))])
+        pygame.draw.polygon(surf,(20,120,60),[(body.right+int(8*scale),body.top+int(10*scale)),(body.right-int(8*scale),body.top+int(28*scale)),(body.right-int(10*scale),body.top+int(2*scale))])
+    elif name=="Esqueleto":
+        # Costela e coluna vertebral
+        pygame.draw.line(surf,BLACK,(body.centerx,body.top+int(4*scale)),(body.centerx,body.bottom),max(1,int(2*scale)))
+        pygame.draw.line(surf,BLACK,(body.left+int(4*scale),body.top+int(14*scale)),(body.right-int(4*scale),body.top+int(14*scale)),max(1,int(2*scale)))
+
+def draw_character_select_sprite(surf, char, x, y, tick):
+    """
+    Desenha o sprite de seleção do personagem na tela de escolha.
+    Usa imagem real se disponível; cai back para retrato geométrico.
+    """
+    sprite_path = char.get("select_sprite")
+    sprite = None
+    if sprite_path:
+        sprite = load_img_path(ASSET_DIR / sprite_path, (110, 110))
+    if sprite:
+        rect = sprite.get_rect(center=(x, y))
+        surf.blit(sprite, rect)
+    else:
+        draw_character_portrait(surf, char, x - 22, y - 28, scale=1.05)
+
+def draw_player_sprite(surf,player):
+    """
+    Desenha o jogador geometricamente (fallback sem sprites).
+    Inclui detalhes específicos de cada personagem e indicador visual de carga (dragão).
+    """
+    r=player.rect; cx=r.centerx
+    body=pygame.Rect(r.x,r.y+10,r.w,r.h-10)
+    pygame.draw.rect(surf,player.body_color,body,border_radius=5)
+    head=pygame.Rect(body.x+4,body.y-18,body.w-8,18)
+    pygame.draw.rect(surf,player.head_color,head,border_radius=5)
+    pygame.draw.circle(surf,BLACK,(head.centerx-4*player.facing,head.centery),2)  # Olho
+
+    name=player.character["name"]
+    if name=="Bruxinha":
+        hat=[(cx-12,r.top+10),(cx+12,r.top+10),(cx,r.top-10)]
+        pygame.draw.polygon(surf,PURPLE,hat)
+        pygame.draw.line(surf,YELLOW,(cx-10,r.top+10),(cx+10,r.top+10),2)
+    elif name=="Vampiro":
+        pygame.draw.polygon(surf,(20,20,30),[(body.left-4,body.top+10),(body.left+6,body.top+28),(body.left+12,body.top+8)])
+        pygame.draw.polygon(surf,(20,20,30),[(body.right+4,body.top+10),(body.right-6,body.top+28),(body.right-12,body.top+8)])
+    elif name=="Dragaozinho":
+        pygame.draw.polygon(surf,(20,120,60),[(body.left-5,body.top+12),(body.left+5,body.top+24),(body.left+8,body.top+6)])
+        pygame.draw.polygon(surf,(20,120,60),[(body.right+5,body.top+12),(body.right-5,body.top+24),(body.right-8,body.top+6)])
+        pygame.draw.polygon(surf,(60,180,100),[(body.centerx-6,body.bottom-2),(body.centerx+8,body.bottom+6),(body.centerx+2,body.bottom-10)])  # Cauda
+    elif name=="Esqueleto":
+        pygame.draw.line(surf,BLACK,(body.centerx,body.top+4),(body.centerx,body.bottom+2),2)
+        pygame.draw.line(surf,BLACK,(body.left+3,body.top+12),(body.right-3,body.top+12),2)
+
+    # Aura de carregamento do dragão (cresce conforme segura o clique)
+    if player.shot_style=="fireball" and player.is_charging:
+        power=max(0.25,min(1.0,player.charge_frames/max(1,player.max_charge_frames)))
+        aura_r=int(16+26*power)
+        aura=pygame.Surface((aura_r*4,aura_r*4),pygame.SRCALPHA)
+        c=(aura.get_width()//2,aura.get_height()//2)
+        pygame.draw.circle(aura,(255,80,20,70),c,aura_r+8)
+        pygame.draw.circle(aura,(255,180,50,110),c,aura_r+3)
+        surf.blit(aura,(body.centerx-c[0],body.centery-c[1]-8))
+
+def draw_hp_panel(surf,player):
+    """Painel de HP no canto superior esquerdo: retrato, barra de vida e corações."""
+    panel=pygame.Rect(8,8,250,78)
+    pygame.draw.rect(surf,(20,20,35),panel,border_radius=12)   # Fundo escuro
+    pygame.draw.rect(surf,(90,90,120),panel,2,border_radius=12) # Borda
+    draw_character_portrait(surf,player.character,16,14,scale=0.75,facing=1)
+    draw_text_shadow(surf,player.character["name"],font_small,WHITE,76,14)
+    # Barra de HP
+    bx,by,bw,bh=76,34,154,14
+    pygame.draw.rect(surf,GRAY,(bx,by,bw,bh),border_radius=4)  # Fundo da barra
+    pygame.draw.rect(surf,GREEN,(bx,by,int(bw*max(0,player.hp)/player.MAX_HP),bh),border_radius=4)  # Preenchimento
+    # Corações (máximo 3)
+    filled=max(0,min(3,int(math.ceil((player.hp/player.MAX_HP)*3))))
+    for i in range(3):
+        draw_heart(surf,78+i*26,60,i<filled)
+
+def draw_weapon_icon(surf,player,x,y):
+    """Desenha o ícone da arma atual do jogador na posição (x,y)."""
+    style=player.shot_style
+    if style=="potion":
+        pygame.draw.circle(surf,(90,170,255),(x,y),16)
+        pygame.draw.circle(surf,WHITE,(x,y),16,2)
+        pygame.draw.circle(surf,WHITE,(x-4,y-4),4)  # Reflexo
+    elif style=="triple":
+        for off in(-14,0,14):   # Três balas em linha
+            pygame.draw.circle(surf,(255,80,120),(x+off,y),7)
+            pygame.draw.circle(surf,WHITE,(x+off,y),7,2)
+    elif style=="fireball":
+        pygame.draw.circle(surf,(255,110,20),(x,y),16)
+        pygame.draw.circle(surf,(255,180,50),(x,y),10)
+        pygame.draw.circle(surf,WHITE,(x-3,y-3),3)
+    elif style=="boomerang":
+        pygame.draw.arc(surf,(220,220,220),(x-16,y-14,28,24),math.radians(25),math.radians(335),4)
+        pygame.draw.circle(surf,WHITE,(x+10,y),3)
+
+def draw_weapon_panel(surf,player):
+    """Painel de arma: ícone, nome, dano, cadência e dica de uso."""
+    panel=pygame.Rect(8,194,250,88)
+    pygame.draw.rect(surf,(20,20,35),panel,border_radius=12)
+    pygame.draw.rect(surf,(90,90,120),panel,2,border_radius=12)
+    draw_weapon_icon(surf,player,36,238)
+    draw_text_shadow(surf,WEAPON_NAMES.get(player.shot_style,player.shot_style),font_small,WHITE,68,208)
+    draw_text_shadow(surf,f"Damage: {player.get_weapon_damage()}",font_tiny,LIGHT_GRAY,68,236)
+    draw_text_shadow(surf,f"Cadence: {player.shot_cd_max}f",font_tiny,LIGHT_GRAY,68,256)
+    if player.shot_style=="fireball":
+        draw_text_shadow(surf,"Hold click",font_tiny,YELLOW,68,276)  # Dica do dragão
+
+def draw_controls_panel(surf,lines):
+    """Painel de controles no canto esquerdo da tela."""
+    panel=pygame.Rect(8,96,250,88)
+    pygame.draw.rect(surf,(20,20,35),panel,border_radius=12)
+    pygame.draw.rect(surf,(90,90,120),panel,2,border_radius=12)
+    y=108
+    for line in lines:
+        draw_text_shadow(surf,line,font_tiny,WHITE,20,y); y+=18
+
+def draw_bottom_hearts(surf,player):
+    """Desenha os 3 corações de vida centralizados na parte inferior da tela."""
+    cx=BOSS_W//2; y=BOSS_H-56
+    filled=max(0,min(3,int(math.ceil((player.hp/player.MAX_HP)*3))))
+    for i in range(3):
+        draw_heart(surf,cx+(i-1)*70,y,i<filled)
+
+def draw_common_hud(surf,player,boss_title,boss_hp=None,boss_max_hp=None,sub_title=""):
+    """
+    Desenha todo o HUD de gameplay:
+    - Painel de HP e retrato do jogador
+    - Nome do boss e subtítulo
+    - Barra de HP do boss (se fornecida)
+    - Painel de controles
+    - Corações na base da tela
+    - Painel de arma
+    """
+    draw_hp_panel(surf,player)
+    img=font_sm.render(f"Hero: {player.character['name']}",True,CYAN)
+    surf.blit(img,(BOSS_W-250,12))
+    draw_text_shadow(surf,boss_title,font_med,YELLOW,BOSS_W//2-len(boss_title)*8,10)
+    if sub_title:
+        draw_text_shadow(surf,sub_title,font_sm,CYAN,BOSS_W//2-len(sub_title)*5,42)
+    if boss_hp is not None and boss_max_hp is not None:
+        # Barra de HP do boss no topo central
+        bw=420; bx=BOSS_W//2-bw//2; by=52
+        pygame.draw.rect(surf,GRAY,(bx,by,bw,18),border_radius=6)
+        pygame.draw.rect(surf,RED,(bx,by,int(bw*max(0,boss_hp)/boss_max_hp),18),border_radius=6)
+        pygame.draw.rect(surf,GOLD,(bx,by,bw,18),2,border_radius=6)
+    draw_controls_panel(surf,["W A S D or Arrows: move","SPACE: jump","Mouse click: attack"])
+    draw_bottom_hearts(surf,player)
+    draw_weapon_panel(surf,player)
+
+#                                         TELA DE SELEÇÃO DE PERSONAGEM
+
+def character_select():
+    """
+    Loop da tela de seleção de personagem.
+    Navegação com LEFT/RIGHT ou clique.
+    Retorna o dicionário do personagem escolhido.
+    """
+    selected = 0         # Índice do personagem selecionado
+    clock_sel = pygame.time.Clock()
+    t = 0.0              # Tempo para animações
+
+    while True:
+        dt = clock_sel.tick(FPS) / 1000.0
+        t += dt
+        events = pygame.event.get()
+        start_game = False
+
+        for ev in events:
+            if ev.type == pygame.QUIT:
+                pygame.quit(); sys.exit()
+            if ev.type == pygame.KEYDOWN:
+                if ev.key == pygame.K_LEFT:
+                    selected = (selected - 1) % len(CHARACTERS)   # Navega para esquerda (circular)
+                elif ev.key == pygame.K_RIGHT:
+                    selected = (selected + 1) % len(CHARACTERS)   # Navega para direita (circular)
+                elif ev.key in (pygame.K_RETURN, pygame.K_SPACE):
+                    start_game = True
+                elif ev.key == pygame.K_ESCAPE:
+                    pygame.quit(); sys.exit()
+            if botao.clicado(ev):
+                start_game = True
+
+        draw_menu_base(tela, t)  # Reutiliza o fundo animado do menu
+
+        # Overlay semitransparente para destacar o conteúdo
+        overlay = pygame.Surface((MENU_W, MENU_H), pygame.SRCALPHA)
+        overlay.fill((0, 0, 0, 35))
+        tela.blit(overlay, (0, 0))
+
+        draw_text(tela, "ESCOLHA SEU HEROI", f_titulo, WHITE, MENU_W // 2, 85)
+        draw_text(tela, "LEFT / RIGHT para escolher | ENTER ou INICIAR para começar",
+                  f_sub, GRAY, MENU_W // 2, 132)
+
+        spacing = 200    # Espaçamento horizontal entre os cards
+        start_x = MENU_W // 2 - spacing * 1.5
+        styles = {       # Nomes amigáveis dos estilos de tiro
+            "potion": "Poção",
+            "triple": "Triplo",
+            "fireball": "Bola de Fogo",
+            "boomerang": "Bumerangue",
+        }
+
+        for i, char in enumerate(CHARACTERS):
+            x = int(start_x + i * spacing)
+            y = MENU_H // 2 + 40
+            sel = i == selected  # Este card está selecionado?
+
+            # Desenha o card de fundo
+            card = pygame.Rect(x - 70, y - 85, 140, 190)
+            pygame.draw.rect(tela, (18, 18, 30), card, border_radius=14)
+            pygame.draw.rect(tela, GOLD if sel else (80, 80, 110), card, 2, border_radius=14)  # Borda dourada se selecionado
+
+            draw_character_select_sprite(tela, char, x, y - 10, t)
+            draw_text(tela, char["name"], f_sub, WHITE if sel else GRAY, x, y + 72)
+            draw_text(tela, styles.get(char["shot_style"], char["shot_style"]),
+                      f_pular, (180, 180, 200), x, y + 100)
+
+        pygame.display.flip()
+
+        if start_game:
+            if som_clique: som_clique.play()
+            return CHARACTERS[selected]  # Retorna o personagem escolhido
+
+#                                               TELA DE HISTÓRIA GENÉRICA
+
+def run_story_generic(slides, title="HISTÓRIA"):
+    """
+    Exibe uma sequência de slides de história com fade in/out.
+    ESPAÇO ou ENTER avança o slide atual.
+    Indicadores circulares no rodapé mostram o progresso.
+    """
+    clock_s=pygame.time.Clock()
+    idx=0        # Índice do slide atual
+    timer=0.0    # Timer do estado atual
+    phase="in"   # Estado: "in" (fadein), "show" (visível), "out" (fadeout)
+    alpha=0      # Opacidade atual do texto
+
+    while True:
+        dt=clock_s.tick(FPS)/1000.0
+        events=pygame.event.get()
+        for ev in events:
+            if ev.type==pygame.QUIT: pygame.quit(); sys.exit()
+            if ev.type==pygame.KEYDOWN and ev.key in(pygame.K_SPACE,pygame.K_RETURN):
+                timer=999  # Força avançar o slide atual
+
+        FADE=0.45   # Duração do fade em segundos
+        SHOW=3.2    # Duração da exibição do slide em segundos
+
+        timer+=dt
+        if phase=="in":
+            alpha=min(255,int(255*timer/FADE))   # Aumenta opacidade
+            if timer>=FADE: phase="show"; timer=0.0
+        elif phase=="show":
+            alpha=255
+            if timer>=SHOW: phase="out"; timer=0.0
+        elif phase=="out":
+            alpha=max(0,255-int(255*timer/FADE))  # Diminui opacidade
+            if timer>=FADE:
+                idx+=1
+                if idx>=len(slides): return   # Acabaram os slides
+                phase="in"; timer=0.0
+
+        # Fundo gradiente roxo escuro
+        draw_gradient_rect(tela,(12,6,24),(32,10,40),(0,0,MENU_W,MENU_H))
+
+        # Círculos decorativos de fundo
+        for i in range(6):
+            pygame.draw.circle(tela,(40,0,60),(120+i*150,MENU_H//2),80+i*8,3)
+
+        # Título do capítulo
+        title_surf=f_titulo.render(title,True,WHITE)
+        tela.blit(title_surf,(MENU_W//2-title_surf.get_width()//2,60))
+
+        # Texto do slide com fade
+        if idx<len(slides):
+            lines=[]
+            for part in slides[idx].split("\n"):
+                lines.extend(wrap_text(part,f_historia,MENU_W-200))
+            total_h=len(lines)*(f_historia.get_height()+8)
+            y0=MENU_H//2-total_h//2
+            box=pygame.Surface((MENU_W,MENU_H),pygame.SRCALPHA)
+            for line in lines:
+                txt=f_historia.render(line,True,COR_HISTORIA)
+                box.blit(txt,(MENU_W//2-txt.get_width()//2,y0))
+                y0+=f_historia.get_height()+8
+            box.set_alpha(alpha)     # Aplica o fade
+            tela.blit(box,(0,0))
+
+        # Dica de navegação
+        hint=f_pular.render("ESPACO ou ENTER para avançar",True,(130,100,60))
+        tela.blit(hint,(MENU_W//2-hint.get_width()//2,MENU_H-28))
+
+        # Indicadores de progresso (bolinhas)
+        n=len(slides)
+        for i in range(n):
+            c=(255,165,0) if i==idx else (60,45,20)
+            pygame.draw.circle(tela,c,(MENU_W//2-(n-1)*14+i*28,MENU_H-50),6)
+
+        pygame.display.flip()
+
+#                                        TELA FINAL (vitória ou game over)
+
+def final_screen(title,subtitle):
+    """
+    Exibe tela de fim de jogo.
+    R = reiniciar, ESC = sair.
+    Retorna True se o jogador quer reiniciar.
+    """
+    clock_f=pygame.time.Clock()
+    while True:
+        clock_f.tick(FPS)
+        events=pygame.event.get()
+        for ev in events:
+            if ev.type==pygame.QUIT: pygame.quit(); sys.exit()
+            if ev.type==pygame.KEYDOWN:
+                if ev.key==pygame.K_r: return True    # Reiniciar
+                if ev.key==pygame.K_ESCAPE: pygame.quit(); sys.exit()
+        draw_gradient_rect(tela,(0,40,0),(0,80,40),(0,0,MENU_W,MENU_H))  # Fundo verde
+        draw_text(tela,title,f_titulo,GREEN,MENU_W//2,MENU_H//2-50)
+        draw_text(tela,subtitle,f_sub,WHITE,MENU_W//2,MENU_H//2+10)
+        draw_text(tela,"R = reiniciar   ESC = sair",f_sub,GRAY,MENU_W//2,MENU_H//2+70)
+        pygame.display.flip()
+
+#                                              CLASSES DE GAMEPLAY
+
+class PlayerBullet:
+    """
+    Projétil disparado pelo jogador.
+    Suporta 4 estilos: normal, potion (gravidade forte), fireball, boomerang (retorna).
+    """
+    def __init__(self, x, y, vx, vy, color, damage=10, radius=6, kind="normal", sprite=None):
+        self.fx=float(x); self.fy=float(y)      # Posição em float (precisão)
+        self.vx=vx; self.vy=vy                   # Velocidade
+        self.color=color; self.damage=damage
+        self.radius=radius; self.kind=kind
+        self.sprite = sprite                     # Imagem opcional
+        self.life=180; self.age=0               # Vida em frames
+        self.can_damage=True                     # Pode causar dano?
+        self.returning=False                     # Boomerang voltando?
+        self.return_started=False               # Flag: começou a retornar?
+        size=max(2,radius*2)
+        self.rect=pygame.Rect(int(x)-radius,int(y)-radius,size,size)
+
+    def update(self):
+        self.age+=1
+        # Física específica por tipo
+        if self.kind=="potion": self.vy+=0.12         # Cai com gravidade leve
+        elif self.kind=="fireball": self.vy+=0.05     # Cai muito levemente
+        elif self.kind=="boomerang":
+            if self.age>65 and not self.return_started:
+                # Inverte a direção após 65 frames
+                self.returning=True; self.return_started=True
+                self.vx=-self.vx*1.15; self.vy=-self.vy*0.9
+            if self.returning: self.vx*=0.999; self.vy*=0.999  # Desacelera ao retornar
+        self.fx+=self.vx; self.fy+=self.vy
+        self.rect.center=(int(self.fx),int(self.fy))
+        self.life-=1
+        # Remove se sair da tela
+        if self.rect.right<-60 or self.rect.left>BOSS_W+60 or self.rect.top>BOSS_H+60 or self.rect.bottom<-60:
+            self.life=0
+
+    def draw(self, surf):
+        if self.sprite:
+            img = self.sprite
+            if self.vx < 0:
+                img = pygame.transform.flip(img, True, False)  # Espelha se indo para esquerda
+            center_blit(surf, img, self.rect.center)
+            return
+        if self.kind=="potion":
+            pygame.draw.circle(surf,self.color,self.rect.center,self.radius)
+            pygame.draw.circle(surf,WHITE,self.rect.center,max(2,self.radius//2)); return
+        if self.kind=="fireball":
+            pygame.draw.circle(surf,(255,80,20),self.rect.center,self.radius)
+            pygame.draw.circle(surf,(255,200,60),self.rect.center,max(2,self.radius-3))
+            pygame.draw.circle(surf,WHITE,self.rect.center,max(1,self.radius-6)); return
+        # Normal e boomerang: elipse que pisca entre amarelo e laranja
+        col=YELLOW if (self.age//2)%2==0 else ORANGE
+        pygame.draw.ellipse(surf,col,self.rect)
+        pygame.draw.ellipse(surf,WHITE,self.rect.inflate(-6,-2),2)
+
+
+class Player:
+    """
+    Personagem controlado pelo jogador.
+    Gerencia movimento, pulo, disparo (4 estilos), dano e animação de sprites.
+    """
+    W,H=36,52  # Tamanho da hitbox
+
+    def __init__(self,character):
+        # Copia atributos do dicionário do personagem
+        self.character=character
+        self.SPEED=character["speed"]; self.MAX_HP=character["max_hp"]
+        self.body_color=character["body_color"]; self.head_color=character["head_color"]
+        self.bullet_color=character["bullet_color"]; self.shot_style=character["shot_style"]
+        self.shot_cd_max=character["shot_cd"]; self.shot_speed=character["shot_speed"]
+        self.shot_damage=character["shot_damage"]; self.bullet_radius=character["bullet_radius"]
+        # Atributos exclusivos do dragão (fireball)
+        self.max_charge_frames=character.get("max_charge_frames",0)
+        self.min_fire_speed=character.get("min_fire_speed",0)
+        self.max_fire_speed=character.get("max_fire_speed",0)
+        self.min_fire_damage=character.get("min_fire_damage",0)
+        self.max_fire_damage=character.get("max_fire_damage",0)
+        self.min_fire_radius=character.get("min_fire_radius",0)
+        self.max_fire_radius=character.get("max_fire_radius",0)
+        # Estado inicial
+        self.rect=pygame.Rect(100,GROUND_Y-self.H,self.W,self.H)
+        self.hp=self.MAX_HP; self.vel_y=0.0; self.on_ground=False
+        self.invincible_frames=0; self.bullets=[]; self.shoot_cd=0
+        self.facing=1    # 1 = direita, -1 = esquerda
+        self.dead=False; self.anim_t=0.0
+        self.is_charging=False; self.charge_frames=0
+        self.asset_key = character["asset_key"]
+        self.sprites = PLAYER_SPRITES.get(self.asset_key, {})
+        self.move_dx = 0       # Direção horizontal atual (para animação)
+        self.hurt_frames = 0   # Frames de animação de dano
+
+    def get_weapon_damage(self):
+        """Retorna o dano máximo da arma atual (para exibição no HUD)."""
+        return self.max_fire_damage if self.shot_style=="fireball" else self.shot_damage
+
+    def handle_physics(self, keys, platforms, ground_y):
+        """
+        Processa movimento horizontal, gravidade, pulo e colisões com
+        o chão e plataformas.
+        """
+        dx = 0
+        if keys[pygame.K_LEFT] or keys[pygame.K_a]:  dx -= self.SPEED
+        if keys[pygame.K_RIGHT] or keys[pygame.K_d]: dx += self.SPEED
+        self.move_dx = dx
+        if dx != 0: self.facing = 1 if dx > 0 else -1
+
+        self.rect.x += dx
+        self.rect.x = clamp(self.rect.x, 0, BOSS_W - self.W)  # Limita aos limites da tela
+
+        self.vel_y += 0.55   # Gravidade
+        self.rect.y += int(self.vel_y)
+
+        # Colisão com o chão
+        self.on_ground = False
+        if self.rect.bottom >= ground_y:
+            self.rect.bottom = ground_y
+            self.vel_y = 0
+            self.on_ground = True
+
+        # Colisão com plataformas (somente descendo, pela parte de cima)
+        for plat in platforms:
+            if self.vel_y >= 0 and self.rect.colliderect(plat) and self.rect.bottom - int(self.vel_y) <= plat.top + 6:
+                self.rect.bottom = plat.top
+                self.vel_y = 0
+                self.on_ground = True
+
+        # Pulo (somente quando no chão)
+        if (keys[pygame.K_UP] or keys[pygame.K_w] or keys[pygame.K_SPACE]) and self.on_ground:
+            self.vel_y = -15
+
+    def _rotate(self,vx,vy,ang):
+        """Rotaciona o vetor (vx,vy) por 'ang' radianos (para o tiro triplo)."""
+        ca,sa=math.cos(ang),math.sin(ang)
+        return vx*ca-vy*sa,vx*sa+vy*ca
+
+    def _shoot_mouse(self,mx,my):
+        """
+        Cria projéteis em direção ao cursor do mouse.
+        O comportamento varia conforme o shot_style do personagem.
+        """
+        ox,oy=self.rect.centerx,self.rect.centery
+        dx=mx-ox; dy=my-oy; dist=math.hypot(dx,dy) or 1
+        nx,ny=dx/dist,dy/dist   # Direção normalizada
+
+        if self.shot_style=="potion":
+            # Um projétil direto com física de queda
+            self.bullets.append(PlayerBullet(ox,oy,nx*self.shot_speed,ny*self.shot_speed,
+                                             self.bullet_color,damage=self.shot_damage,
+                                             radius=self.bullet_radius,kind="potion"))
+        elif self.shot_style=="triple":
+            # Três projéteis em leque (-10°, 0°, +10°)
+            for ang in(-0.18,0,0.18):
+                rvx,rvy=self._rotate(nx*self.shot_speed,ny*self.shot_speed,ang)
+                self.bullets.append(PlayerBullet(ox,oy,rvx,rvy,self.bullet_color,
+                                                  damage=self.shot_damage,radius=self.bullet_radius,kind="normal"))
+        elif self.shot_style=="fireball":
+            # Dano/velocidade/tamanho escalam com o tempo de carga
+            power=max(0.25,min(1.0,self.charge_frames/max(1,self.max_charge_frames)))
+            speed=lerp(self.min_fire_speed,self.max_fire_speed,power)
+            damage=int(lerp(self.min_fire_damage,self.max_fire_damage,power))
+            radius=int(lerp(self.min_fire_radius,self.max_fire_radius,power))
+            self.bullets.append(PlayerBullet(ox,oy,nx*speed,ny*speed,self.bullet_color,
+                                              damage=damage,radius=radius,kind="fireball"))
+        elif self.shot_style=="boomerang":
+            self.bullets.append(PlayerBullet(ox,oy,nx*self.shot_speed,ny*self.shot_speed,
+                                              self.bullet_color,damage=self.shot_damage,
+                                              radius=self.bullet_radius,kind="boomerang"))
+
+    def update_frank(self,events,ground_y=None,platforms=None):
+        """
+        Atualização principal do jogador a cada frame:
+        física, disparo, projéteis, invencibilidade e animação.
+        """
+        if platforms is None: platforms=[]
+        if ground_y is None: ground_y=GROUND_Y
+        keys=pygame.key.get_pressed()
+        self.handle_physics(keys,platforms,ground_y)
+        self.shoot_cd=max(0,self.shoot_cd-1)
+
+        mouse_down=pygame.mouse.get_pressed(num_buttons=3)[0]
+
+        if self.shot_style=="fireball":
+            # Inicia carregamento ao pressionar o botão
+            for ev in events:
+                if ev.type==pygame.MOUSEBUTTONDOWN and ev.button==1 and self.shoot_cd==0 and not self.is_charging:
+                    self.is_charging=True; self.charge_frames=0
+            if self.is_charging:
+                if mouse_down:
+                    self.charge_frames=min(self.max_charge_frames,self.charge_frames+1)  # Aumenta carga
+                else:
+                    # Dispara ao soltar o botão
+                    mx,my=pygame.mouse.get_pos(); self._shoot_mouse(mx,my)
+                    self.is_charging=False; self.shoot_cd=self.shot_cd_max
+        else:
+            # Outros estilos: dispara ao clicar diretamente
+            for ev in events:
+                if ev.type==pygame.MOUSEBUTTONDOWN and ev.button==1 and self.shoot_cd==0:
+                    mx,my=pygame.mouse.get_pos(); self._shoot_mouse(mx,my)
+                    self.shoot_cd=self.shot_cd_max
+
+        # Atualiza e remove projéteis expirados
+        for b in self.bullets[:]:
+            b.update()
+            if b.life<=0: self.bullets.remove(b)
+
+        if self.invincible_frames>0: self.invincible_frames-=1
+        if self.hurt_frames>0: self.hurt_frames-=1
+        self.anim_t+=0.016  # Avança o tempo de animação
+
+    def take_damage(self,dmg):
+        """
+        Aplica dano ao jogador.
+        Ignora se DEBUG_INVENCIBLE ou durante frames de invencibilidade.
+        """
+        if DEBUG_INVENCIBLE: return
+        if self.invincible_frames == 0:
+            self.hp -= dmg
+            self.invincible_frames = 45   # ~0.75s de invencibilidade pós-dano
+            self.hurt_frames = 18         # Frames da animação de dano
+            if self.hp <= 0: self.dead = True
+
+    def draw(self,surf):
+        """
+        Seleciona a animação correta (idle/run/jump/hurt/shoot) e a desenha.
+        Aplica tinte vermelho se tomando dano sem sprite de hurt.
+        Desenha todos os projéteis ativos.
+        """
+        anim = None
+
+        if self.hurt_frames > 0 and self.sprites.get("hurt"):
+            anim = self.sprites.get("hurt")
+        else:
+            if self.on_ground:
+                if self.move_dx != 0:
+                    anim = self.sprites.get("run") or self.sprites.get("idle")
+                else:
+                    anim = self.sprites.get("idle")
+            else:
+                anim = self.sprites.get("jump") or self.sprites.get("idle")
+            # Prioriza animação de disparo nos primeiros frames após atirar
+            if self.shoot_cd > self.shot_cd_max - 4 and self.sprites.get("shoot"):
+                anim = self.sprites.get("shoot")
+
+        img = anim.get(self.anim_t) if anim else None
+
+        if img:
+            img = flip_if_needed(img, self.facing)  # Espelha se necessário
+            if self.hurt_frames > 0 and not self.sprites.get("hurt"):
+                # Aplica tinte vermelho semitransparente
+                tint = pygame.Surface(img.get_size(), pygame.SRCALPHA)
+                tint.fill((255, 80, 80, 110))
+                img = img.copy()
+                img.blit(tint, (0, 0), special_flags=pygame.BLEND_RGBA_ADD)
+            center_blit(surf, img, self.rect.center)
+        else:
+            draw_player_sprite(surf, self)  # Fallback geométrico
+
+        for b in self.bullets:
+            b.draw(surf)
+
+#                                             BOSS 0 – ARANHA SOMBRIA
+
+class SpiderWebProjectile:
+    """
+    Projétil de teia da aranha. Voa em direção ao jogador.
+    Possui efeito de rotação visual (spin).
+    """
+    def __init__(self,x,y,vx,vy,damage=12, sprite=None):
+        self.x=float(x); self.y=float(y)
+        self.vx=vx; self.vy=vy; self.damage=damage
+        self.life=220; self.rect=pygame.Rect(int(x)-12,int(y)-12,24,24)
+        self.spin=random.uniform(0,math.pi*2)  # Ângulo inicial aleatório
+        self.sprite = sprite
+
+    def update(self):
+        self.x+=self.vx; self.y+=self.vy
+        self.spin+=0.2   # Rotaciona a cada frame
+        self.life-=1
+        self.rect.center=(int(self.x),int(self.y))
+
+    def draw(self,surf):
+        if self.sprite:
+            center_blit(surf, self.sprite, self.rect.center)
+            return
+        # Fallback: círculo branco com linhas radiais (aspecto de teia)
+        pygame.draw.circle(surf,(235,235,245),self.rect.center,11)
+        pygame.draw.circle(surf,(190,190,205),self.rect.center,11,2)
+        for ang in range(0,360,45):
+            rad=math.radians(ang)+self.spin
+            x2=self.rect.centerx+int(math.cos(rad)*12)
+            y2=self.rect.centery+int(math.sin(rad)*12)
+            pygame.draw.line(surf,(235,235,245),self.rect.center,(x2,y2),1)
+
+
+class SpiderBoss:
+    """
+    Boss 0: Aranha Sombria.
+    Move-se em padrão senoidal pela tela e atira teias no jogador.
+    Em fúria (<45% HP): velocidade e cadência de ataque aumentam.
+    """
+    def __init__(self, visuals):
+        self.v = visuals
+        self.max_hp=650; self.hp=self.max_hp; self.rage=False; self.dead=False
+        self.t=0.0; self.attack_cd=0.0
+        self.x=BOSS_W*0.62; self.y=140    # Posição inicial
+        self.webs=[]; self.flash=0.0
+        self.movement_phase=0.0            # Fase do movimento senoidal
+        self.rect=pygame.Rect(int(self.x)-120,int(self.y)-80,240,180)
+
+    def take_damage(self,dmg):
+        self.hp-=dmg; self.flash=0.14
+        self.rage=self.hp<=self.max_hp*0.45   # Entra em fúria abaixo de 45% de vida
+        if self.hp<=0: self.dead=True
+        return self.dead
+
+    def _spawn_web(self,player,offset_x=0,offset_y=0):
+        """Cria uma teia apontada para a posição atual do jogador."""
+        sx=self.x+5+offset_x; sy=self.y+40+offset_y
+        dx=player.rect.centerx-sx; dy=player.rect.centery-sy
+        dist=math.hypot(dx,dy) or 1
+        spd=6.6 if self.rage else 5.3   # Mais rápido em fúria
+        self.webs.append(SpiderWebProjectile(sx,sy,dx/dist*spd,dy/dist*spd,
+                                              damage=15 if self.rage else 12,
+                                              sprite=self.v.get("web")))
+
+    def update(self,dt,player):
+        self.t+=dt; self.flash=max(0.0,self.flash-dt)
+
+        # Movimento senoidal em X e Y
+        self.movement_phase+=dt*(1.75 if self.rage else 1.2)
+        self.x=BOSS_W*0.52+math.sin(self.movement_phase*1.6)*420
+        self.y=120+math.sin(self.movement_phase*2.2)*110
+        if self.rage:
+            # Adiciona tremor extra em fúria
+            self.x+=math.sin(self.movement_phase*4.5)*50
+            self.y+=math.cos(self.movement_phase*3.8)*28
+        self.x=clamp(self.x,120,BOSS_W-180); self.y=clamp(self.y,60,300)
+        self.rect.update(int(self.x)-120,int(self.y)-80,240,180)
+
+        # Sistema de ataque: cooldown aleatório
+        self.attack_cd-=dt
+        if self.attack_cd<=0:
+            self.attack_cd=random.uniform(0.55,1.0) if self.rage else random.uniform(0.95,1.7)
+            self._spawn_web(player)
+            if self.rage:
+                # Em fúria: dispara 3 teias por vez
+                self._spawn_web(player,offset_x=-25,offset_y=10)
+                self._spawn_web(player,offset_x=25,offset_y=10)
+
+        # Atualiza e remove teias fora da tela
+        for w in self.webs[:]:
+            w.update()
+            if w.life<=0 or w.rect.right<-50 or w.rect.left>BOSS_W+50 or \
+               w.rect.bottom<-50 or w.rect.top>BOSS_H+50:
+                self.webs.remove(w)
+
+    def draw_bg(self,surf):
+        """Desenha o fundo da fase da aranha."""
+        bg = self.v.get("bg")
+        if bg: surf.blit(bg, (0, 0)); return
+        # Fallback: céu escuro com estrelas e pedras
+        surf.fill((19,16,31))
+        for i in range(80):
+            x=(i*167)%BOSS_W; y=(i*41)%(BOSS_H//2); c=50+(i%4)*20
+            pygame.draw.circle(surf,(c,c,c),(x,y),1)
+        pygame.draw.rect(surf,(39,33,45),(0,520,BOSS_W,200))
+        pygame.draw.ellipse(surf,(92,79,72),(250,520,780,220))
+        pygame.draw.polygon(surf,(39,33,45),[(0,0),(170,140),(0,300)])
+        pygame.draw.polygon(surf,(39,33,45),[(BOSS_W,0),(BOSS_W-170,140),(BOSS_W,300)])
+
+    def draw(self,surf):
+        """Desenha fundo, sprite da aranha, teias e barra de HP."""
+        img = self.v.get("bg")
+        if img: surf.blit(img, (0, 0))
+        else:
+            surf.fill((19,16,31))
+            for i in range(80):
+                x=(i*167)%BOSS_W; y=(i*41)%(BOSS_H//2); c=50+(i%4)*20
+                pygame.draw.circle(surf,(c,c,c),(x,y),1)
+            pygame.draw.rect(surf,(39,33,45),(0,520,BOSS_W,200))
+
+        img = self.v.get("boss")
+        if img:
+            center_blit(surf, img.get(self.t), (int(self.x), int(self.y + 20)))
+        else:
+            # Fallback geométrico: corpo + patas
+            cx, cy = int(self.x), int(self.y)
+            body_col = (65,25,25) if self.rage else (40,40,40)
+            pygame.draw.circle(surf, body_col, (cx, cy+35), 58)
+            pygame.draw.circle(surf, (25,25,25), (cx, cy+35), 58, 4)
+            for side in (-1, 1):
+                for i in range(4):
+                    ang = -0.9 + i*0.35
+                    x1 = cx + side*40; y1 = cy + 40 + i*6
+                    x2 = x1 + int(side*math.cos(ang)*100); y2 = y1 + int(math.sin(ang)*70)
+                    pygame.draw.line(surf, (30,30,30), (x1,y1), (x2,y2), 7)
+                    pygame.draw.line(surf, (70,70,70), (x1,y1), (x2,y2), 2)
+
+        for w in self.webs:
+            w.draw(surf)
+
+        # Barra de HP do boss
+        bw = 420; bx = BOSS_W // 2 - bw // 2; by = 18
+        pygame.draw.rect(surf, (20,20,20), (bx, by, bw, 18), border_radius=8)
+        pygame.draw.rect(surf, (190,52,76), (bx, by, int(bw * max(0, self.hp) / self.max_hp), 18), border_radius=8)
+        pygame.draw.rect(surf, (240,220,220), (bx, by, bw, 18), 2, border_radius=8)
+        draw_text(surf, "ARANHA SOMBRIA", font_tiny, WHITE, BOSS_W//2, by+9)
+        if self.rage:
+            draw_text(surf, "[FÚRIA]", font_tiny, ORANGE, BOSS_W//2+150, by+9)
+
+#                                                  BOSS 1 – PALHAÇO
+
+class Particle:
+    """Partícula de efeito visual (explosão de balões, acertos, etc.)."""
+    def __init__(self,x,y,color):
+        self.x,self.y=float(x),float(y)
+        a=random.uniform(0,2*math.pi); sp=random.uniform(2,7)
+        self.vx,self.vy=math.cos(a)*sp,math.sin(a)*sp   # Velocidade em direção aleatória
+        self.life=random.uniform(0.4,1.0); self.max_life=self.life
+        self.color=color; self.size=random.randint(3,8)
+
+    def update(self,dt):
+        self.x+=self.vx; self.y+=self.vy
+        self.vy+=0.15    # Gravidade nas partículas
+        self.life-=dt
+
+    def draw(self,surf):
+        ratio=self.life/self.max_life          # 1.0 = novo, 0.0 = morto
+        c=tuple(int(v*ratio) for v in self.color)  # Escurece conforme morre
+        r=max(1,int(self.size*ratio))
+        pygame.draw.circle(surf,c,(int(self.x),int(self.y)),r)
+
+
+class Spike:
+    """
+    Espinho gerado quando um balão estoura.
+    Voa em 8 direções a partir do ponto de explosão.
+    """
+    SPEED = 5
+    LIFE = 2.5  # Segundos de vida
+
+    def __init__(self, x, y, dx, dy, sprite=None):
+        self.x, self.y = float(x), float(y)
+        self.dx, self.dy = dx * self.SPEED, dy * self.SPEED
+        self.life = self.LIFE
+        self.rect = pygame.Rect(int(self.x) - 5, int(self.y) - 5, 10, 10)
+        self.sprite = sprite
+
+    def update(self, dt):
+        self.x += self.dx; self.y += self.dy
+        self.life -= dt
+        self.rect.center = (int(self.x), int(self.y))
+
+    def draw(self, surf):
+        if self.sprite:
+            center_blit(surf, self.sprite, self.rect.center)
+            return
+        # Fallback: estrela de 8 pontas com cor que varia com o tempo de vida
+        col = (255, min(255, 80 + int(175 * (1 - self.life / self.LIFE))), 0)
+        cx, cy = int(self.x), int(self.y)
+        pts = [(cx, cy-8),(cx+3,cy-2),(cx+8,cy),(cx+3,cy+2),
+               (cx,cy+8),(cx-3,cy+2),(cx-8,cy),(cx-3,cy-2)]
+        pygame.draw.polygon(surf, col, pts)
+
+
+def spawn_spikes(x, y, spikes_list, sprite=None):
+    """Cria 8 espinhos em todas as direções cardeais e diagonais."""
+    for dx, dy in [(1,0),(-1,0),(0,1),(0,-1),(1,1),(-1,1),(1,-1),(-1,-1)]:
+        spikes_list.append(Spike(x, y, dx, dy, sprite=sprite))
+
+
+class VerticalBalloon:
+    """
+    Balão que sobe verticalmente pela tela.
+    Ao ser atingido ou atingir o teto, explode em espinhos.
+    """
+    def __init__(self, sprite=None):
+        self.sprite = sprite
+        self.x = random.randint(60, BOSS_W - 60)
+        self.y = float(BOSS_H + 40)       # Começa abaixo da tela
+        self.speed = random.uniform(2.0, 4.0)
+        self.radius = 22
+        self.color = random.choice([RED, PINK, CYAN, YELLOW, PURPLE, ORANGE])
+        self.popped = False
+        self.rect = pygame.Rect(self.x - self.radius, int(self.y) - self.radius,
+                                self.radius * 2, self.radius * 2)
+
+    def update(self, dt):
+        self.y -= self.speed   # Sobe
+        self.rect.center = (self.x, int(self.y))
+
+    def draw(self, surf):
+        if self.popped: return
+        if self.sprite:
+            center_blit(surf, self.sprite, self.rect.center); return
+        # Fallback: círculo colorido com reflexo e barbante
+        pygame.draw.circle(surf, self.color, (self.x, int(self.y)), self.radius)
+        pygame.draw.circle(surf, WHITE, (self.x, int(self.y)), self.radius, 2)
+        pygame.draw.circle(surf, WHITE, (self.x - 6, int(self.y) - 6), 5)  # Reflexo
+        pygame.draw.line(surf, GRAY, (self.x, int(self.y) + self.radius),
+                         (self.x, int(self.y) + self.radius + 14), 2)  # Barbante
+
+
+class TrackerBalloon:
+    """
+    Balão que segue o jogador. Deve ser destruído antes de atingi-lo.
+    Mais perigoso que o VerticalBalloon pois não tem trajetória fixa.
+    """
+    SPEED = 4.0
+
+    def __init__(self, sx, sy, tx, ty, sprite=None):
+        self.sprite = sprite
+        self.x, self.y = float(sx), float(sy)
+        self.radius = 16
+        self.color = (255, 80, 80)
+        self.popped = False
+        self.rect = pygame.Rect(int(self.x) - self.radius, int(self.y) - self.radius,
+                                self.radius * 2, self.radius * 2)
+        self._tx = float(tx); self._ty = float(ty)  # Alvo atual
+
+    def update(self, dt, player_rect=None):
+        if player_rect is not None:
+            # Atualiza o alvo para a posição atual do jogador
+            self._tx = float(player_rect.centerx)
+            self._ty = float(player_rect.centery)
+        dx, dy = normalize(self._tx - self.x, self._ty - self.y)
+        self.x += dx * self.SPEED; self.y += dy * self.SPEED
+        self.rect.center = (int(self.x), int(self.y))
+
+    def draw(self, surf):
+        if self.popped: return
+        if self.sprite:
+            center_blit(surf, self.sprite, self.rect.center); return
+        ex, ey = int(self.x), int(self.y)
+        pygame.draw.circle(surf, self.color, (ex, ey), self.radius)
+        pygame.draw.circle(surf, WHITE, (ex, ey), self.radius, 2)
+        # Olhinhos e boquinha de raiva
+        pygame.draw.circle(surf, BLACK, (ex-4, ey-3), 3)
+        pygame.draw.circle(surf, BLACK, (ex+4, ey-3), 3)
+        pygame.draw.arc(surf, BLACK, (ex-5, ey+1, 10, 6), math.pi, 0, 2)
+
+
+class BossBall:
+    """
+    Bola lançada pelo palhaço na fase 2, voa em linha reta em direção ao jogador.
+    Em fúria, o boss lança múltiplas bolas por vez.
+    """
+    SPEED = 5.0
+    RADIUS = 14
+
+    def __init__(self, sx, sy, tx, ty, sprite=None):
+        self.sprite = sprite
+        self.x, self.y = float(sx), float(sy)
+        dx, dy = normalize(tx - sx, ty - sy)
+        self.vx, self.vy = dx * self.SPEED, dy * self.SPEED
+        self.color = random.choice([ORANGE, RED, PURPLE, CYAN])
+        self.t = 0.0
+        self.rect = pygame.Rect(int(self.x) - self.RADIUS, int(self.y) - self.RADIUS,
+                                self.RADIUS * 2, self.RADIUS * 2)
+
+    def update(self, dt):
+        self.x += self.vx; self.y += self.vy; self.t += dt
+        self.rect.center = (int(self.x), int(self.y))
+
+    def draw(self, surf):
+        if self.sprite:
+            center_blit(surf, self.sprite, self.rect.center); return
+        cx, cy = int(self.x), int(self.y)
+        pulse = int(3 * math.sin(self.t * 8))  # Efeito de pulso visual
+        pygame.draw.circle(surf, self.color, (cx, cy), self.RADIUS + pulse)
+        pygame.draw.circle(surf, WHITE, (cx, cy), self.RADIUS + pulse, 2)
+        pygame.draw.circle(surf, WHITE, (cx-4, cy-4), 4)  # Reflexo
+
+
+class ClownBoss:
+    """
+    Boss 1: Palhaço.
+    Fase 1: Jogador deve sobreviver 25 segundos enquanto desvia de balões.
+    Fase 2: Plataformas aparecem; palhaço se move e lança bolas diretamente.
+    """
+    W, H = 90, 200
+    MAX_HP = 3500
+
+    def __init__(self, visuals=None):
+        self.v = visuals or {}
+        self.hp = self.MAX_HP
+        self.phase = 1
+        self.rect = pygame.Rect(BOSS_W // 2 - self.W // 2, GROUND_Y - self.H, self.W, self.H)
+        self.facing = -1
+        self.t = 0.0
+        self.p1_survive_time = 25.0   # Segundos para sobreviver na fase 1
+        self.p1_timer = 0.0           # Timer atual
+        self.vert_balloon_cd = 0.0    # Cooldown dos balões verticais
+        self.track_balloon_cd = 0.0   # Cooldown dos balões rastreadores
+        self.vel_x = 6.0              # Velocidade horizontal na fase 2
+        self.ball_cd = 0.0
+        self.balls = []
+        self.hit_flash = 0.0
+        self.rage = False
+        self.head_rect = pygame.Rect(0, 0, 76, 76)  # Hitbox da cabeça
+
+    def take_damage(self, dmg):
+        self.hp -= dmg; self.hit_flash = 0.12
+        self.rage = self.hp <= self.MAX_HP * 0.5   # Fúria abaixo de 50%
+        return self.hp <= 0
+
+    def update_phase1(self, dt, player, vert_balloons, track_balloons):
+        """Fase 1: boss fica parado balançando, lança balões verticais e rastreadores."""
+        self.t += dt; self.hit_flash = max(0, self.hit_flash - dt)
+        self.p1_timer += dt
+
+        # Boss oscila levemente em X
+        self.rect.centerx = BOSS_W // 2 + int(26 * math.sin(self.t * 1.6))
+        self.rect.bottom = GROUND_Y
+
+        # Spawn de balões verticais
+        self.vert_balloon_cd -= dt
+        if self.vert_balloon_cd <= 0:
+            vert_balloons.append(VerticalBalloon(sprite=self.v.get("balloon_up")))
+            self.vert_balloon_cd = random.uniform(1.0, 2.2)
+
+        # Spawn de balões rastreadores
+        self.track_balloon_cd -= dt
+        if self.track_balloon_cd <= 0:
+            track_balloons.append(TrackerBalloon(self.rect.centerx, self.rect.centery,
+                                                 player.rect.centerx, player.rect.centery,
+                                                 sprite=self.v.get("balloon_track")))
+            self.track_balloon_cd = random.uniform(2.8, 5.0)
+
+        # Atualiza hitbox da cabeça
+        head_r = 38
+        head_y = self.rect.top - head_r + 10 + int(math.sin(self.t * 2) * 4)
+        self.head_rect.center = (self.rect.centerx, head_y)
+
+    def update_phase2(self, dt, player, vert_balloons):
+        """Fase 2: boss se move em bounce horizontal e lança bolas diretamente."""
+        self.t += dt; self.hit_flash = max(0, self.hit_flash - dt)
+        self.rage = self.hp <= self.MAX_HP * 0.35  # Fúria abaixo de 35%
+
+        spd = 1.35 if self.rage else 1.0
+        self.rect.x += int(self.vel_x * spd)
+
+        # Bounce nas paredes
+        if self.rect.right >= BOSS_W - 30:
+            self.rect.right = BOSS_W - 30; self.vel_x *= -1
+        elif self.rect.left <= 30:
+            self.rect.left = 30; self.vel_x *= -1
+
+        self.rect.bottom = GROUND_Y
+
+        # Spawn de bolas
+        self.ball_cd -= dt
+        if self.ball_cd <= 0:
+            self.balls.append(BossBall(self.rect.centerx, self.rect.centery,
+                                        player.rect.centerx, player.rect.centery,
+                                        sprite=BOSS_VISUALS["clown"].get("ball")))
+            if self.rage:
+                # Em fúria: lança 2 bolas adicionais com desvio lateral
+                self.balls.append(BossBall(self.rect.centerx, self.rect.centery,
+                                            player.rect.centerx + 40, player.rect.centery,
+                                            sprite=self.v.get("ball")))
+                self.balls.append(BossBall(self.rect.centerx, self.rect.centery,
+                                            player.rect.centerx - 40, player.rect.centery,
+                                            sprite=self.v.get("ball")))
+            self.ball_cd = random.uniform(0.95, 1.6) if self.rage else random.uniform(1.3, 2.5)
+
+        # Atualiza bolas e remove as que saíram da tela
+        for b in self.balls[:]:
+            b.update(dt)
+            if b.rect.right < -50 or b.rect.left > BOSS_W + 50 or \
+               b.rect.bottom < -50 or b.rect.top > BOSS_H + 50:
+                self.balls.remove(b)
+
+        # Balões verticais também presentes na fase 2
+        self.vert_balloon_cd -= dt
+        if self.vert_balloon_cd <= 0:
+            vert_balloons.append(VerticalBalloon(sprite=self.v.get("balloon")))
+            self.vert_balloon_cd = random.uniform(0.9, 1.8)
+
+        head_r = 38
+        head_y = self.rect.top - head_r + 10 + int(math.sin(self.t * 2) * 4)
+        self.head_rect.center = (self.rect.centerx, head_y)
+
+    def draw(self, surf):
+        """Desenha fundo, plataformas (fase 2), sprite do palhaço e barra de HP."""
+        bg = self.v.get("bg")
+        if bg: surf.blit(bg, (0, 0))
+        else:
+            draw_gradient_rect(surf, (18, 6, 34), (8, 5, 18), (0, 0, BOSS_W, BOSS_H))
+            pygame.draw.rect(surf, (55, 28, 10), (0, GROUND_Y, BOSS_W, BOSS_H - GROUND_Y))
+            pygame.draw.line(surf, GOLD, (0, GROUND_Y), (BOSS_W, GROUND_Y), 3)
+
+        if self.phase == 2:
+            for plat in CLOWN_PLATFORMS:
+                pygame.draw.rect(surf, (120, 60, 20), plat, border_radius=4)
+                pygame.draw.rect(surf, GOLD, plat, 2, border_radius=4)
+
+        boss_anim = self.v.get("boss")
+        if boss_anim and boss_anim.frames:
+            img = boss_anim.get(self.t)
+            if img: center_blit(surf, img, self.rect.center)
+        else:
+            # Fallback: palhaço geométrico com chapéu, nariz e braços animados
+            flash = self.hit_flash > 0
+            cx = self.rect.centerx
+            head_y = self.rect.top - 38 + 10 + int(math.sin(self.t * 2) * 4)
+            body_col = WHITE if flash else (255, 80, 200)
+            pygame.draw.ellipse(surf, body_col, self.rect.inflate(-10, 0))
+            for i in range(3):
+                sy = self.rect.top + 30 + i * 25
+                pygame.draw.rect(surf, YELLOW if i % 2 == 0 else ORANGE,
+                                 (self.rect.left, sy, self.W, 15))
+            pygame.draw.circle(surf, (255, 220, 180), (cx, head_y), 38)
+            pygame.draw.ellipse(surf, WHITE, (cx - 20, head_y - 10, 40, 24))
+            for ex in [cx - 12, cx + 12]:
+                pygame.draw.circle(surf, BLACK, (ex, head_y - 4), 7)
+                pygame.draw.circle(surf, WHITE, (ex, head_y - 6), 3)
+            mouth_col = DARK_RED if flash else RED
+            if self.phase == 2:
+                pygame.draw.arc(surf, mouth_col, (cx-18, head_y+8, 36, 20), math.pi, 2*math.pi, 4)
+            else:
+                pygame.draw.arc(surf, mouth_col, (cx-18, head_y+4, 36, 20), 0, math.pi, 4)
+            nose_bob = int(math.sin(self.t * 3) * 2)
+            pygame.draw.circle(surf, RED, (cx, head_y + nose_bob + 2), 8)
+            hat_pts = [(cx-28, head_y-38+4), (cx+28, head_y-38+4), (cx, head_y-38-50)]
+            pygame.draw.polygon(surf, PURPLE, hat_pts)
+            pygame.draw.circle(surf, YELLOW, (cx, head_y-38-50), 8)
+            arm_angle = math.sin(self.t * 2) * 0.4
+            for side in [-1, 1]:
+                ax = cx + side * (self.W // 2); ay = self.rect.top + 40
+                ex2 = ax + side * int(40 * math.cos(arm_angle))
+                ey2 = ay + int(40 * math.sin(arm_angle + 0.5))
+                pygame.draw.line(surf, (255, 180, 80), (ax, ay), (ex2, ey2), 8)
+                pygame.draw.circle(surf, WHITE, (ex2, ey2), 10)
+
+        # Barra de HP (posição diferente nas duas fases)
+        bw = 240; bx = BOSS_W // 2 - bw // 2
+        if self.phase == 2:
+            by = self.rect.top - 24
+            pygame.draw.rect(surf, DARK_RED, (bx, by, bw, 10), border_radius=5)
+            pygame.draw.rect(surf, RED, (bx, by, int(bw * max(0, self.hp / self.MAX_HP)), 10), border_radius=5)
+            pygame.draw.rect(surf, WHITE, (bx, by, bw, 10), 2, border_radius=5)
+        else:
+            by = 18
+            pygame.draw.rect(surf, (20, 20, 20), (bx, by, 420, 18), border_radius=8)
+            pygame.draw.rect(surf, (190, 52, 76), (bx, by, int(420 * max(0, self.hp) / self.MAX_HP), 18), border_radius=8)
+            pygame.draw.rect(surf, (240, 220, 220), (bx, by, 420, 18), 2, border_radius=8)
+
+#                                     BOSS 2 – DR. FRANKENSTEIN E O MONSTRO
+
+def draw_detailed_pillar(surf, center_x, base_y, height=235, pulse=0, active=True, variant="center"):
+    """
+    Desenha uma das colunas Tesla do laboratório.
+    Usa sprite se disponível; fallback geométrico marrom.
+    """
+    img = BOSS_VISUALS["frank"].get("pillar")
+    if img:
+        rect = img.get_rect(midbottom=(center_x, base_y))
+        surf.blit(img, rect)
+        return
+    x = center_x - 42; w = 84; y = base_y - height
+    pygame.draw.rect(surf, (55, 40, 25), pygame.Rect(x, y, w, height), border_radius=8)
+
+def draw_lab_bg(surf,tick,rage=False):
+    """Fundo do laboratório: chão marrom escuro, linha de separação."""
+    surf.fill((22,10,12) if rage else (12,14,24))
+    pygame.draw.rect(surf,(30,22,12),(0,BOSS_H-80,BOSS_W,80))
+    pygame.draw.line(surf,(70,48,22),(0,BOSS_H-80),(BOSS_W,BOSS_H-80),3)
+
+def draw_monster_bg(surf,tick,rage=False):
+    """Fundo com rosto gigante do monstro e olhos brilhantes."""
+    pulse=abs(math.sin(tick*0.04))*16
+    base=(26+int(pulse),18,10) if rage else (10+int(pulse),38+int(pulse),10+int(pulse))
+    surf.fill(base)
+    cx = BOSS_W // 2
+    head_col = (40,110,40) if not rage else (86,58,28)
+    outline = (28,70,28) if not rage else (120,40,18)
+    pygame.draw.ellipse(surf, head_col, pygame.Rect(cx-420,-190,840,600))
+    pygame.draw.ellipse(surf, outline, pygame.Rect(cx-420,-190,840,600), 5)
+    for ex in [cx-145, cx+145]:
+        ey = 140
+        glow = int(180+60*abs(math.sin(tick*0.05)))
+        pygame.draw.circle(surf,(glow,glow,0),(ex,ey),58)
+        pygame.draw.circle(surf,(255,220,0),(ex,ey),40)
+        pygame.draw.circle(surf,BLACK,(ex,ey),22)
+        pygame.draw.circle(surf,(255,255,200),(ex-10,ey-10),7)
+    pygame.draw.polygon(surf,(25,75,25),[(cx,230),(cx-30,288),(cx+30,288)])
+    pygame.draw.ellipse(surf,(10,10,10),pygame.Rect(cx-120,286,240,80))
+    for i in range(6):
+        tx = cx-110+i*38
+        pygame.draw.rect(surf,WHITE,pygame.Rect(tx,288,28,34),border_radius=3)
+    pygame.draw.rect(surf,(18,36,18),pygame.Rect(0,BOSS_H-80,BOSS_W,80))
+    pygame.draw.line(surf,(48,82,48),(0,BOSS_H-80),(BOSS_W,BOSS_H-80),3)
+
+
+class TeleportParticle:
+    """Partícula elétrica gerada quando o Dr. Frankenstein teleporta."""
+    def __init__(self,x,y):
+        a=random.uniform(0,math.pi*2); sp=random.uniform(1.5,5)
+        self.fx,self.fy=float(x),float(y)
+        self.vx,self.vy=math.cos(a)*sp,math.sin(a)*sp
+        self.life=random.randint(15,35); self.max_life=self.life
+        self.color=random.choice([BOLT_C,CYAN,PURPLE,WHITE])
+        self.r=random.randint(3,7)
+
+    def update(self):
+        self.fx+=self.vx; self.fy+=self.vy; self.vy+=0.15; self.life-=1
+
+    def draw(self,surf):
+        ratio=self.life/self.max_life; r=max(1,int(self.r*ratio))
+        pygame.draw.circle(surf,self.color,(int(self.fx),int(self.fy)),r)
+
+
+class DrBullet:
+    """Projétil do Dr. Frankenstein. Deixa rastro visual."""
+    def __init__(self,x,y,vx,vy,damage=10, sprite=None):
+        self.fx,self.fy=float(x),float(y)
+        self.rect=pygame.Rect(x-7,y-7,14,14)
+        self.vx,self.vy=vx,vy; self.damage=damage
+        self.trail=[]   # Últimas posições para o rastro
+        self.sprite = sprite
+
+    def update(self):
+        self.trail.append((self.rect.centerx,self.rect.centery))
+        if len(self.trail)>10: self.trail.pop(0)   # Máximo 10 pontos no rastro
+        self.fx+=self.vx; self.fy+=self.vy
+        self.rect.centerx=int(self.fx); self.rect.centery=int(self.fy)
+
+    def draw(self,surf):
+        if self.sprite:
+            center_blit(surf, self.sprite, self.rect.center); return
+        pygame.draw.circle(surf,ORANGE,self.rect.center,7)
+        pygame.draw.circle(surf,YELLOW,self.rect.center,3)
+
+
+class DrFrankenstein:
+    """
+    Fase 1 do Boss 2: Dr. Frankenstein.
+    Teleporta entre 3 colunas Tesla e atira projéteis.
+    Em fúria: teleporta mais rápido e faz rajadas.
+    """
+    W, H = 60, 100
+    MAX_HP = 500
+    TELEPORT_INTERVAL = 170       # Frames entre teleportes normais
+    RAGE_TELEPORT_INTERVAL = 120  # Frames entre teleportes em fúria
+    SHOOT_INTERVAL = 54           # Frames entre tiros normais
+    RAGE_SHOOT_INTERVAL = 34      # Frames entre tiros em fúria
+    BURST_INTERVAL = 110          # Frames entre rajadas (só em fúria)
+    RAGE_THRESHOLD = 220          # HP que ativa a fúria
+
+    def __init__(self, visuals=None):
+        self.v = visuals or {}
+        self.pillar_idx = 1        # Começa na coluna central
+        self.rect = self._pillar_rect(1)
+        self.hp = self.MAX_HP
+        self.teleport_cd = self.TELEPORT_INTERVAL
+        self.shoot_cd = self.SHOOT_INTERVAL
+        self.burst_cd = self.BURST_INTERVAL
+        self.bullets = []; self.particles = []
+        self.teleport_flash = 0    # Frames do efeito de piscar ao teleportar
+        self.visible = True        # Visível durante o teleporte?
+        self.rage = False
+        self.bg_anim = 0           # Contador para animações de fundo
+
+    def draw_bg(self, surf, tick):
+        bg = self.v.get("bg")
+        if bg: surf.blit(bg, (0, 0))
+        else: draw_lab_bg(surf, tick, rage=self.rage)
+
+    def _pillar_rect(self, idx):
+        """Retorna o Rect do doutor na coluna de índice idx (0, 1 ou 2)."""
+        x = TESLA_XS[idx] - self.W // 2
+        y = BOSS_H - 80 - self.H - 210   # Acima da coluna
+        return pygame.Rect(x, y, self.W, self.H)
+
+    def _spawn_particles(self, rect, count=40):
+        """Gera partículas de teleporte ao redor do retângulo dado."""
+        cx, cy = rect.centerx, rect.centery
+        for _ in range(count):
+            self.particles.append(TeleportParticle(
+                cx + random.randint(-self.W//2, self.W//2),
+                cy + random.randint(-self.H//2, self.H//2)
+            ))
+
+    def _shoot_one(self, player, speed=None, damage=None, spread=0.0):
+        """Atira um projétil em direção ao jogador com desvio angular opcional."""
+        dx = player.rect.centerx - self.rect.centerx
+        dy = player.rect.centery - self.rect.centery
+        ang = math.atan2(dy, dx) + spread
+        spd = speed if speed is not None else (7 if self.rage else 5.5)
+        dmg = damage if damage is not None else (13 if self.rage else 10)
+        self.bullets.append(DrBullet(self.rect.centerx, self.rect.centery,
+                                      math.cos(ang)*spd, math.sin(ang)*spd,
+                                      damage=dmg, sprite=self.v.get("bullet")))
+
+    def _shoot_burst(self, player):
+        """Rajada de 3 projéteis em leque (só em fúria)."""
+        for spread in (-0.22, 0, 0.22):
+            self._shoot_one(player, speed=6.7 if self.rage else 6.0,
+                            damage=12 if self.rage else 9, spread=spread)
+
+    def update(self, player):
+        self.bg_anim += 1
+        self.rage = self.hp <= self.RAGE_THRESHOLD
+
+        t_int = self.RAGE_TELEPORT_INTERVAL if self.rage else self.TELEPORT_INTERVAL
+        s_int = self.RAGE_SHOOT_INTERVAL if self.rage else self.SHOOT_INTERVAL
+        b_int = max(42, self.BURST_INTERVAL - 25) if self.rage else self.BURST_INTERVAL
+
+        self.teleport_cd -= 1
+        if self.teleport_cd <= 0:
+            # Teleporta para uma coluna diferente da atual
+            self._spawn_particles(self.rect, count=60 if self.rage else 50)
+            choices = [i for i in range(3) if i != self.pillar_idx]
+            self.pillar_idx = random.choice(choices)
+            self.rect = self._pillar_rect(self.pillar_idx)
+            self.teleport_cd = t_int; self.teleport_flash = 25
+            self.shoot_cd = 18 if self.rage else 25
+            self.burst_cd = b_int
+            self._spawn_particles(self.rect, count=60 if self.rage else 50)
+            add_screen_shake(5 if self.rage else 3, 4 if self.rage else 2)
+
+        # Efeito de piscar durante o teleporte
+        if self.teleport_flash > 0:
+            self.teleport_flash -= 1
+            self.visible = (self.teleport_flash // 4) % 2 == 0
+        else:
+            self.visible = True
+
+        self.shoot_cd -= 1
+        if self.shoot_cd <= 0:
+            self.shoot_cd = s_int; self._shoot_one(player)
+
+        if self.rage:
+            self.burst_cd -= 1
+            if self.burst_cd <= 0:
+                self._shoot_burst(player); self.burst_cd = b_int
+
+        screen_rect = pygame.Rect(0, 0, BOSS_W, BOSS_H)
+        for b in self.bullets[:]:
+            b.update()
+            if not screen_rect.colliderect(b.rect): self.bullets.remove(b)
+
+        for p in self.particles[:]:
+            p.update()
+            if p.life <= 0: self.particles.remove(p)
+
+    def take_damage(self, dmg):
+        self.hp -= dmg
+
+    def _draw_hp(self, surf):
+        """Barra de HP do doutor no topo da tela."""
+        bw=320; bx=BOSS_W//2-bw//2; by=12
+        pygame.draw.rect(surf,GRAY,(bx,by,bw,22),border_radius=5)
+        ratio=max(0,self.hp)/self.MAX_HP
+        col=(255,90,50) if self.rage else PURPLE
+        pygame.draw.rect(surf,col,(bx,by,int(bw*ratio),22),border_radius=5)
+        txt=f"Dr. Frankenstein  {self.hp}/{self.MAX_HP}"
+        if self.rage: txt+="  [FÚRIA]"
+        draw_text(surf,txt,font_sm,WHITE,BOSS_W//2,by+11)
+
+    def draw(self, surf):
+        """Desenha fundo, colunas, partículas, sprite do doutor e barra de HP."""
+        self.draw_bg(surf, self.bg_anim)
+        for px, variant in zip(TESLA_XS, ["left", "center", "right"]):
+            draw_detailed_pillar(surf, px, BOSS_H-80, 235, pulse=self.bg_anim, active=True, variant=variant)
+        for p in self.particles: p.draw(surf)
+        if self.visible:
+            img = self.v.get("doctor")
+            if img and img.frames:
+                frame = img.get(self.bg_anim / 10.0)
+                if frame: center_blit(surf, frame, self.rect.center)
+        self._draw_hp(surf)
+
+
+# Constantes das mãos do monstro 
+HAND_Y_REST  = BOSS_H-80-140   # Y de repouso das mãos
+HAND_Y_SMASH = BOSS_H-80-30   # Y no momento do ataque (quase no chão)
+
+
+class MonsterHand:
+    """
+    Mão do monstro (fase 2 do boss 2).
+    Estados: rest → windup → smash → recover → rest.
+    Causa dano ao jogador durante o "smash".
+    """
+    W, H = 110, 90
+
+    def __init__(self, side, sprite=None):
+        self.side = side   # "left" ou "right"
+        self.sprite = sprite
+        self.x = 120 if side == "left" else BOSS_W - 120 - self.W
+        self.y = float(HAND_Y_REST)
+        self.state = "rest"
+        self.timer = 0
+
+    @property
+    def rect(self):
+        return pygame.Rect(int(self.x), int(self.y), self.W, self.H)
+
+    def start_attack(self, player_x):
+        """Inicia o ataque alinhando a mão horizontalmente com o jogador."""
+        if self.state == "rest":
+            self.state = "windup"; self.timer = 45
+            self.x = max(0, min(BOSS_W - self.W, player_x - self.W // 2))
+
+    def update(self, rage=False):
+        if self.state == "windup":
+            # Sobe lentamente antes de atacar
+            self.y = lerp(self.y, HAND_Y_REST - (180 if rage else 165), 0.22 if rage else 0.18)
+            self.timer -= 1
+            if self.timer <= 0: self.state = "smash"
+        elif self.state == "smash":
+            # Desce rapidamente para atacar
+            self.y = lerp(self.y, HAND_Y_SMASH, 0.48 if rage else 0.40)
+            if self.y >= HAND_Y_SMASH - 4:
+                self.state = "recover"; self.timer = 28 if rage else 35
+        elif self.state == "recover":
+            # Retorna ao repouso
+            self.y = lerp(self.y, HAND_Y_REST, 0.16 if rage else 0.12)
+            self.timer -= 1
+            if self.timer <= 0: self.state = "rest"
+
+    def is_smashing(self):
+        """Retorna True se a mão está no ponto de impacto."""
+        return self.state == "smash" and self.y >= HAND_Y_SMASH - 10
+
+    def draw(self, surf):
+        if self.sprite:
+            img = self.sprite
+            if self.side == "right":
+                img = pygame.transform.flip(img, True, False)  # Espelha a mão direita
+            center_blit(surf, img, self.rect.center); return
+        # Fallback: mão verde com 4 dedos
+        r = self.rect
+        pygame.draw.rect(surf, (30,110,30), r, border_radius=10)
+        fw = (r.w - 10) // 4
+        for i in range(4):
+            fx = r.x + 5 + i * (fw + 2)
+            fh = [28, 32, 30, 26][i]
+            pygame.draw.rect(surf, (30,110,30), pygame.Rect(fx, r.y-fh, fw, fh), border_radius=6)
+        pygame.draw.rect(surf, (10,60,10), r, 3, border_radius=10)
+
+
+class MonsterPhase:
+    """
+    Fase 2 do Boss 2: O Monstro de Frankenstein.
+    Alterna entre fases de ataque com mãos (smash) e raios (lightning).
+    """
+    MAX_HP = 850
+    SMASH_DURATION = 300       # Frames da fase de ataque com mãos
+    PAUSE_DURATION = 35        # Frames de pausa entre fases
+    HAND_ATTACK_INTERVAL = 42  # Frames entre ataques das mãos
+    RAGE_THRESHOLD = 320       # HP que ativa fúria
+    STOMP_INTERVAL = 230       # Frames entre pisões
+
+    def __init__(self, visuals=None):
+        self.v = visuals or {}
+        self.hp = self.MAX_HP
+        self.hands = [MonsterHand("left", self.v.get("hand_left")),
+                      MonsterHand("right", self.v.get("hand_right"))]
+        self.bg_anim = 0
+        self.state = "smash"        # Estado inicial
+        self.state_cd = self.SMASH_DURATION
+        self.attack_cd = self.HAND_ATTACK_INTERVAL
+        self.next_hand = 0          # Qual mão ataca a seguir (alternado)
+        self.safe_zone = None       # Zona segura durante os raios
+        self.stomp = None           # Ataque de pisão ativo
+        self.stomp_cd = self.STOMP_INTERVAL
+        self.rage = False
+
+    def take_damage(self, dmg):
+        self.hp -= dmg
+
+    def update(self, player):
+        self.bg_anim += 1
+        self.rage = self.hp <= self.RAGE_THRESHOLD
+        self.state_cd -= 1
+
+        # Atualiza pisão se ativo
+        if self.stomp: self.stomp.update()
+        if self.stomp and self.stomp.done:
+            self.stomp = None
+            self.stomp_cd = 165 if self.rage else self.STOMP_INTERVAL
+
+        # Máquina de estados das fases
+        if self.state_cd <= 0 and self.stomp is None:
+            if self.state == "smash":
+                self.state = "pause_after_smash"; self.state_cd = self.PAUSE_DURATION
+            elif self.state == "pause_after_smash":
+                self.state = "lightning"; self.state_cd = 9999
+                self.safe_zone = LightningSafeZone(rage=self.rage)
+            elif self.state == "lightning":
+                self.state = "pause_after_lightning"; self.state_cd = self.PAUSE_DURATION
+                self.safe_zone = None
+            elif self.state == "pause_after_lightning":
+                self.state = "smash"; self.state_cd = self.SMASH_DURATION
+
+        if self.state == "smash":
+            hand_interval = 28 if self.rage else self.HAND_ATTACK_INTERVAL
+            self.attack_cd -= 1
+            if self.attack_cd <= 0:
+                # Alterna entre mão esquerda e direita
+                self.hands[self.next_hand].start_attack(player.rect.centerx)
+                self.next_hand = 1 - self.next_hand
+                self.attack_cd = hand_interval
+            self.stomp_cd -= 1
+            if self.stomp_cd <= 0 and self.stomp is None:
+                self.stomp = StompAttack(player.rect.centerx, rage=self.rage)
+                self.stomp_cd = 9999
+                add_screen_shake(10 if self.rage else 8, 6 if self.rage else 4)
+
+        elif self.state == "lightning" and self.safe_zone:
+            self.safe_zone.update()
+            if self.safe_zone.done: self.state_cd = 0
+
+        for hand in self.hands: hand.update(rage=self.rage)
+
+    def check_hits(self, player):
+        """Verifica colisões das mãos, zona de raio e pisão com o jogador."""
+        for hand in self.hands:
+            if hand.is_smashing() and player.rect.colliderect(hand.rect):
+                player.take_damage(32 if self.rage else 28)
+        if self.safe_zone and self.safe_zone.player_in_danger(player.rect):
+            player.take_damage(20 if self.rage else 16)
+        if self.stomp and self.stomp.can_hit_player(player):
+            player.take_damage(30 if self.rage else 24)
+            self.stomp.mark_hit()
+
+    def _draw_hp(self, surf):
+        bw=380; bx=BOSS_W//2-bw//2; by=12
+        pygame.draw.rect(surf,GRAY,(bx,by,bw,22),border_radius=5)
+        col=(255,90,50) if self.rage else GREEN
+        pygame.draw.rect(surf,col,(bx,by,int(bw*max(0,self.hp)/self.MAX_HP),22),border_radius=5)
+        txt=f"MONSTRO  {self.hp}/{self.MAX_HP}"
+        if self.rage: txt+="  [FÚRIA]"
+        draw_text(surf,txt,font_sm,WHITE,BOSS_W//2,by+11)
+
+    def draw(self, surf):
+        bg = self.v.get("bg")
+        if bg: surf.blit(bg, (0, 0))
+        else: self.draw_bg(surf, self.bg_anim)
+        monster_anim = self.v.get("monster")
+        if monster_anim and monster_anim.frames:
+            img = monster_anim.get(self.bg_anim / 10.0)
+            if img: center_blit(surf, img, (BOSS_W//2, BOSS_H//2-20))
+        if self.safe_zone: self.safe_zone.draw(surf)
+        if self.stomp: self.stomp.draw(surf)
+        for hand in self.hands: hand.draw(surf)
+        self._draw_hp(surf)
+
+    def draw_bg(self, surf, tick):
+        surf.fill((12, 14, 24))
+
+
+class StompAttack:
+    """
+    Ataque de pisão: aviso visual → onda de choque se expande pelo chão.
+    Jogadores no chão dentro do raio levam dano.
+    """
+    def __init__(self,x,rage=False):
+        self.x=x; self.rage=rage
+        self.state="warn"                          # Fase de aviso
+        self.timer=24 if rage else 34              # Duração do aviso
+        self.strike_frames=24 if rage else 18      # Duração da onda
+        self.recover_frames=16
+        self.radius=0
+        self.max_radius=760 if rage else 620       # Raio máximo da onda
+        self.hit_done=False; self.done=False
+
+    def update(self):
+        self.timer-=1
+        if self.state=="warn":
+            self.radius=80
+            if self.timer<=0:
+                self.state="strike"; self.timer=self.strike_frames
+                add_screen_shake(10 if self.rage else 7, 7 if self.rage else 5)
+        elif self.state=="strike":
+            self.radius=min(self.max_radius,self.radius+(70 if self.rage else 52))
+            if self.timer<=0: self.state="recover"; self.timer=self.recover_frames
+        elif self.state=="recover":
+            if self.timer<=0: self.done=True
+
+    def can_hit_player(self,player):
+        if self.state!="strike" or self.hit_done: return False
+        return player.rect.bottom>=BOSS_H-155 and abs(player.rect.centerx-self.x)<=self.radius
+
+    def mark_hit(self): self.hit_done=True
+
+    def draw(self,surf):
+        ground_y=BOSS_H-80
+        if self.state=="warn":
+            pygame.draw.circle(surf,(255,180,60),(self.x,ground_y+8),30)
+            pygame.draw.circle(surf,(255,255,180),(self.x,ground_y+8),14)
+            if(self.timer//6)%2==0: draw_text(surf,"PISAO!",font_lg,ORANGE,self.x,ground_y-70)
+        elif self.state in("strike","recover"):
+            # Onda elíptica que se expande pelo chão
+            alpha=200 if self.state=="strike" else 90
+            ring=pygame.Surface((self.radius*2+12,120),pygame.SRCALPHA)
+            pygame.draw.ellipse(ring,(255,200,80,alpha),pygame.Rect(6,34,self.radius*2,38),6)
+            surf.blit(ring,(self.x-self.radius-6,ground_y-26))
+
+
+class LightningSafeZone:
+    """
+    Ataque de raios do monstro: toda a tela é atingida exceto uma zona segura aleatória.
+    Fases: warn (aviso verde) → strike (raios caem) → fade.
+    """
+    def __init__(self,rage=False):
+        self.rage=rage
+        self.SAFE_W=95 if rage else 120           # Largura da zona segura
+        self.WARN_FRAMES=60 if rage else 75       # Duração do aviso
+        self.STRIKE_FRAMES=92 if rage else 80     # Duração dos raios
+        self.FADE_FRAMES=18
+        self.reset()
+
+    def reset(self):
+        self.safe_x=random.randint(60,BOSS_W-self.SAFE_W-60)  # Posição aleatória
+        self.state="warn"; self.timer=self.WARN_FRAMES
+        self.bolts=[]; self.done=False; self._bolt_cd=0
+
+    @property
+    def safe_rect(self): return pygame.Rect(self.safe_x,0,self.SAFE_W,BOSS_H)
+
+    def update(self):
+        self.timer-=1
+        if self.state=="warn":
+            if self.timer<=0: self.state="strike"; self.timer=self.STRIKE_FRAMES; self._spawn_bolts()
+        elif self.state=="strike":
+            self._bolt_cd-=1
+            if self._bolt_cd<=0: self._spawn_bolts(); self._bolt_cd=5 if self.rage else 7
+            if self.timer<=0: self.state="fade"; self.timer=self.FADE_FRAMES
+        elif self.state=="fade":
+            if self.timer<=0: self.done=True
+        for b in self.bolts[:]:
+            b["life"]-=1
+            if b["life"]<=0: self.bolts.remove(b)
+
+    def _spawn_bolts(self):
+        """Gera raios ziguezagueantes nas áreas fora da zona segura."""
+        if self.safe_x>40:
+            for _ in range(random.randint(4 if self.rage else 3, 6 if self.rage else 5)):
+                self.bolts.append(self._make_bolt(random.randint(10,self.safe_x-10)))
+        right_start=self.safe_x+self.SAFE_W
+        if right_start<BOSS_W-40:
+            for _ in range(random.randint(4 if self.rage else 3, 6 if self.rage else 5)):
+                self.bolts.append(self._make_bolt(random.randint(right_start+10,BOSS_W-10)))
+
+    def _make_bolt(self,x):
+        """Cria um raio ziguezagueante de cima a baixo a partir de X."""
+        segs=[]; cy_b=0; cx_b=x
+        while cy_b<BOSS_H:
+            ny=cy_b+random.randint(18,45); nx=cx_b+random.randint(-22,22)
+            segs.append(((cx_b,cy_b),(nx,ny))); cx_b,cy_b=nx,ny
+        return{"segs":segs,"life":random.randint(8,18)}
+
+    def player_in_danger(self,player_rect):
+        return self.state=="strike" and not self.safe_rect.colliderect(player_rect)
+
+    def draw(self,surf):
+        if self.state=="warn":
+            progress=1-self.timer/self.WARN_FRAMES
+            alpha=int(80+80*abs(math.sin(progress*math.pi*6)))
+            ov=pygame.Surface((BOSS_W,BOSS_H),pygame.SRCALPHA); ov.fill((200,50,0,alpha)); surf.blit(ov,(0,0))
+            sz=pygame.Surface((self.SAFE_W,BOSS_H),pygame.SRCALPHA); sz.fill((0,220,80,60)); surf.blit(sz,(self.safe_x,0))
+            pygame.draw.rect(surf,(0,255,100),pygame.Rect(self.safe_x,0,self.SAFE_W,BOSS_H),3)
+            if(self.timer//10)%2==0: draw_text(surf,"AVISO DE RAIO",font_lg,YELLOW,BOSS_W//2,BOSS_H//2-60)
+        elif self.state=="strike":
+            for b in self.bolts:
+                for(ax,ay),(bx2,by2) in b["segs"]:
+                    pygame.draw.line(surf,BOLT_C,(ax,ay),(bx2,by2),3)
+                    pygame.draw.line(surf,WHITE,(ax,ay),(bx2,by2),1)
+            sz=pygame.Surface((self.SAFE_W,BOSS_H),pygame.SRCALPHA); sz.fill((0,220,80,35)); surf.blit(sz,(self.safe_x,0))
+            pygame.draw.rect(surf,(0,255,100),pygame.Rect(self.safe_x,0,self.SAFE_W,BOSS_H),3)
+
+
+
+#                                            BOSS 3 – LORD OF NIGHTMARES
+
+
+class NightmareProjectile:
+    """
+    Projétil do Lord of Nightmares. Três tipos:
+    - "bolt": projétil direto
+    - "wave": onda horizontal que atravessa a tela
+    - "rain": projétil que cai com gravidade
+    """
+    def __init__(self, x, y, vx, vy, color, damage=18, kind="bolt", sprite=None):
+        self.x=float(x); self.y=float(y)
+        self.vx=vx; self.vy=vy; self.color=color
+        self.damage=damage; self.kind=kind; self.life=240; self.age=0
+        self.spin=random.uniform(0,math.pi*2); self.trail=[]
+        # Hitbox varia por tipo
+        if kind=="wave":   self.rect=pygame.Rect(int(x)-150,int(y)-18,300,36)
+        elif kind=="rain": self.rect=pygame.Rect(int(x)-8,int(y)-8,16,22)
+        else:              self.rect=pygame.Rect(int(x)-12,int(y)-12,24,24)
+        self.sprite=sprite
+
+    def update(self):
+        self.age+=1; self.life-=1
+        self.trail.append((self.rect.centerx,self.rect.centery))
+        if len(self.trail)>8: self.trail.pop(0)
+        if self.kind=="rain": self.vy+=0.18   # Gravidade na chuva
+        self.x+=self.vx; self.y+=self.vy
+        if self.kind=="wave":
+            self.rect.x=int(self.x)-150; self.rect.y=int(self.y)-18
+        else:
+            self.rect.center=(int(self.x),int(self.y))
+
+    def draw(self, surf):
+        # Usa sprite se disponível para cada tipo
+        if self.kind=="bolt" and self.sprite:
+            center_blit(surf,self.sprite,self.rect.center); return
+        if self.kind=="wave" and self.sprite:
+            center_blit(surf,self.sprite,self.rect.center); return
+        if self.kind=="rain" and self.sprite:
+            center_blit(surf,self.sprite,self.rect.center); return
+        pygame.draw.circle(surf,self.color,self.rect.center,10)
+        pygame.draw.circle(surf,WHITE,self.rect.center,10,2)
+
+
+class LordOfNightmares:
+    """
+    Boss Final: Lord of Nightmares.
+    3 fases conforme HP diminui; escala de tamanho aumenta.
+    Fase 1 (>66% HP): bolts e chuva.
+    Fase 2 (33-66%): anel de projéteis + ondas.
+    Fase 3 (<33%): anel maior + ondas duplas + chuva intensa.
+    Fúria abaixo de 22%: tudo mais rápido e forte.
+    """
+    MAX_HP = 1800
+
+    def __init__(self, visuals=None):
+        self.v = visuals or {}
+        self.hp = self.MAX_HP
+        self.phase = 1; self.rage = False; self.phase_flash = 0
+        self.t = 0                  # Tick para animações
+        self.x = BOSS_W // 2; self.y = 170
+        self.scale = 1.0; self.scale_target = 1.0  # Escala atual e alvo
+        self.anchor_y = 170         # Posição Y base por fase
+        self.attack_cd = 0; self.special_cd = 0
+        self.projectiles = []
+        self.rect = pygame.Rect(0, 0, 180, 260)
+        self._sync_rect()
+
+    def _sync_rect(self):
+        """Atualiza o retângulo de colisão conforme a escala atual."""
+        w=int(210*self.scale); h=int(280*self.scale)
+        self.rect=pygame.Rect(int(self.x-w//2),int(self.y-h//2),w,h)
+
+    def _shoot_bolt(self,player,spread=0.0,speed=8.0,color=PURPLE,damage=16):
+        dx=player.rect.centerx-self.rect.centerx; dy=player.rect.centery-self.rect.centery
+        ang=math.atan2(dy,dx)+spread
+        self.projectiles.append(NightmareProjectile(self.rect.centerx,self.rect.centery,
+                                                     math.cos(ang)*speed,math.sin(ang)*speed,
+                                                     color,damage,"bolt"))
+
+    def _shoot_ring(self,count,speed,color,damage=14):
+        """Dispara projéteis em anel (360°) com rotação baseada no tempo."""
+        for i in range(count):
+            ang=(math.tau/count)*i+self.t*0.015
+            self.projectiles.append(NightmareProjectile(self.rect.centerx,self.rect.centery,
+                                                         math.cos(ang)*speed,math.sin(ang)*speed,
+                                                         color,damage,"bolt"))
+
+    def _spawn_rain(self,player,count=4):
+        """Chuva de projéteis que cai do topo em posições aleatórias perto do jogador."""
+        for _ in range(count):
+            rx=clamp(player.rect.centerx+random.randint(-260,260),40,BOSS_W-40)
+            self.projectiles.append(NightmareProjectile(rx,-30,
+                                                         random.uniform(-0.3,0.3),
+                                                         random.uniform(5.5,7.5),
+                                                         CYAN,15 if not self.rage else 20,"rain"))
+
+    def _spawn_wave(self,player,direction=1):
+        """Onda horizontal que atravessa a tela da esquerda para direita ou vice-versa."""
+        y=clamp(player.rect.centery+random.randint(-80,60),120,BOSS_H-150)
+        x=-120 if direction>0 else BOSS_W+120
+        vx=11 if direction>0 else -11
+        self.projectiles.append(NightmareProjectile(x,y,vx,0,ORANGE,
+                                                     22 if not self.rage else 28,"wave"))
+
+    def _update_phase(self):
+        """Determina a fase atual pelo ratio de HP e atualiza escala/âncora."""
+        ratio=self.hp/self.MAX_HP; old_phase=self.phase
+        if ratio>0.66:   self.phase=1; self.scale_target=1.00; self.anchor_y=170
+        elif ratio>0.33: self.phase=2; self.scale_target=1.35; self.anchor_y=255
+        else:            self.phase=3; self.scale_target=1.85; self.anchor_y=335
+        self.rage=ratio<=0.22
+        if self.phase!=old_phase:
+            # Transição de fase: efeito visual e cooldowns resetados
+            self.phase_flash=24; self.projectiles.clear()
+            self.attack_cd=18; self.special_cd=36
+            add_screen_shake(10 if self.phase==3 else 6,5 if self.phase==3 else 3)
+
+    def update(self,player):
+        self.t+=1; self._update_phase()
+
+        # Movimento senoidal com amplitude e velocidade por fase
+        move_amp=230 if self.phase==1 else 320 if self.phase==2 else 380
+        move_speed=0.020 if self.phase==1 else 0.028 if self.phase==2 else 0.036
+        y_amp=18 if self.phase==1 else 28 if self.phase==2 else 14
+
+        target_x=BOSS_W//2+math.sin(self.t*move_speed)*move_amp
+        target_y=self.anchor_y+math.sin(self.t*(move_speed*1.7))*y_amp
+        if self.phase==3: target_y+=math.sin(self.t*0.11)*10
+
+        self.x=lerp(self.x,target_x,0.05 if self.phase<3 else 0.07)
+        self.y=lerp(self.y,target_y,0.04 if self.phase<3 else 0.06)
+        self.scale=lerp(self.scale,self.scale_target,0.05)
+        self._sync_rect()
+
+        self.attack_cd-=1; self.special_cd-=1
+
+        # Padrões de ataque por fase
+        if self.phase==1:
+            if self.attack_cd<=0:
+                self.attack_cd=42 if not self.rage else 28
+                # 3 bolts com leve espalhamento
+                for spread in (0.0,-0.12,0.12):
+                    self._shoot_bolt(player,spread,8.0 if not self.rage else 10.0,PURPLE,16 if not self.rage else 20)
+            if self.special_cd<=0:
+                self.special_cd=110 if not self.rage else 75
+                self._spawn_rain(player,3 if not self.rage else 5)
+
+        elif self.phase==2:
+            if self.attack_cd<=0:
+                self.attack_cd=30 if not self.rage else 22
+                self._shoot_ring(8,6.8 if not self.rage else 8.2,RED,16 if not self.rage else 20)
+                self._shoot_bolt(player,0.0,9.0 if not self.rage else 11.0,RED,18 if not self.rage else 22)
+            if self.special_cd<=0:
+                self.special_cd=85 if not self.rage else 60
+                self._spawn_wave(player,1 if(self.t//60)%2==0 else -1)
+                if self.rage: self._spawn_wave(player,-1 if(self.t//60)%2==0 else 1)
+
+        else:  # Fase 3
+            if self.attack_cd<=0:
+                self.attack_cd=20 if not self.rage else 14
+                self._shoot_ring(12,7.5 if not self.rage else 9.2,ORANGE,20 if not self.rage else 24)
+            if self.special_cd<=0:
+                self.special_cd=55 if not self.rage else 38
+                self._spawn_wave(player,1); self._spawn_wave(player,-1)
+                self._spawn_rain(player,5 if not self.rage else 8)
+
+        # Limpa projéteis fora da tela
+        for p in self.projectiles[:]:
+            p.update()
+            if p.life<=0 or p.rect.right<-80 or p.rect.left>BOSS_W+80 or \
+               p.rect.bottom<-80 or p.rect.top>BOSS_H+80:
+                self.projectiles.remove(p)
+
+    def draw_bg(self, surf):
+        """Fundo muda conforme a fase: estrelas roxas → tiras vermelhas → caos total."""
+        bg=self.v.get("bg1") if self.phase==1 else self.v.get("bg2") if self.phase==2 else self.v.get("bg3")
+        if bg: surf.blit(bg,(0,0)); return
+        if self.phase==1:
+            surf.fill((8,0,18))
+            for i in range(90):
+                x=(i*153+self.t*2)%BOSS_W; y=(i*67)%(BOSS_H//2)
+                pygame.draw.circle(surf,(70,20,110),(int(x),y),1)
+            overlay=pygame.Surface((BOSS_W,BOSS_H),pygame.SRCALPHA); overlay.fill((40,0,70,22)); surf.blit(overlay,(0,0))
+        elif self.phase==2:
+            surf.fill((14,0,8))
+            for x in range(0,BOSS_W,90):
+                pygame.draw.rect(surf,(50,0,30),(x,0,42,BOSS_W),0)
+                pygame.draw.rect(surf,(90,0,50),(x+42,0,20,BOSS_H),0)
+            fog=pygame.Surface((BOSS_W,BOSS_H),pygame.SRCALPHA); fog.fill((120,0,0,18 if not self.rage else 30)); surf.blit(fog,(0,0))
+        else:
+            surf.fill((3,0,10))
+            for i in range(160):
+                px=(i*79+self.t*3)%BOSS_W; py=(i*41+(i%7)*23)%BOSS_H; c=40+(i%5)*12
+                pygame.draw.circle(surf,(c,0,c+20),(int(px),int(py)),1)
+
+    def draw(self, surf):
+        self.draw_bg(surf)
+        if self.phase_flash>0:
+            flash=pygame.Surface((BOSS_W,BOSS_H),pygame.SRCALPHA); flash.fill((255,0,120,35)); surf.blit(flash,(0,0))
+            self.phase_flash-=1
+        img=self.v.get("boss")
+        if img:
+            center_blit(surf,img.get(self.t/10.0),(int(self.x),int(self.y)))
+        else:
+            # Fallback: figura encapuzada escalável com chifres na fase 3
+            w=int(220*self.scale); h=int(320*self.scale)
+            body=pygame.Rect(0,0,w,h); body.center=(int(self.x),int(self.y))
+            # Aura ao redor do corpo
+            aura=pygame.Surface((w+180,h+220),pygame.SRCALPHA)
+            aura_col=(130,0,190,70) if self.phase<3 else (255,40,20,80)
+            pygame.draw.ellipse(aura,aura_col,(30,40,aura.get_width()-60,aura.get_height()-80))
+            surf.blit(aura,(body.centerx-aura.get_width()//2,body.centery-aura.get_height()//2))
+            cloak_col=(20,16,30) if not self.rage else (40,10,16)
+            cloak_outline=(80,0,120) if self.phase<3 else (255,40,60)
+            hood_col=(30,24,42) if not self.rage else (60,14,24)
+            pygame.draw.ellipse(surf,cloak_col,body.inflate(0,-20))
+            pygame.draw.ellipse(surf,cloak_outline,body.inflate(0,-20),4)
+            hood=pygame.Rect(body.centerx-int(72*self.scale),body.top+int(12*self.scale),
+                             int(144*self.scale),int(122*self.scale))
+            pygame.draw.ellipse(surf,hood_col,hood)
+            pygame.draw.ellipse(surf,cloak_outline,hood,3)
+            eye_y=hood.centery; eye_dx=int(20*self.scale)
+            eye_color=RED if self.rage else PURPLE
+            pygame.draw.circle(surf,eye_color,(hood.centerx-eye_dx,eye_y),max(3,int(7*self.scale)))
+            pygame.draw.circle(surf,eye_color,(hood.centerx+eye_dx,eye_y),max(3,int(7*self.scale)))
+            arm_w=max(6,int(14*self.scale))
+            for side in(-1,1):
+                ax=body.centerx+side*int(65*self.scale); ay=body.top+int(120*self.scale)
+                bx=ax+side*int(95*self.scale); by=ay+int(45*math.sin(self.t*0.05+side))
+                pygame.draw.line(surf,(50,40,70),(ax,ay),(bx,by),arm_w)
+            if self.phase>=2:
+                sigil_r=int(70*self.scale)
+                pygame.draw.circle(surf,(100,0,140),(body.centerx,body.bottom-int(40*self.scale)),sigil_r,3)
+            if self.phase==3:
+                for side in(-1,1):
+                    horn=[(hood.centerx+side*int(24*self.scale),hood.top+int(12*self.scale)),
+                           (hood.centerx+side*int(70*self.scale),hood.top-int(34*self.scale)),
+                           (hood.centerx+side*int(48*self.scale),hood.top+int(18*self.scale))]
+                    pygame.draw.polygon(surf,(140,0,180),horn)
+        for p in self.projectiles: p.draw(surf)
+        # Barra de HP global do boss
+        bw=520; bx=BOSS_W//2-bw//2
+        pygame.draw.rect(surf,GRAY,(bx,20,bw,22),border_radius=8)
+        hp_col=PURPLE if self.phase<3 else (255,80,40)
+        pygame.draw.rect(surf,hp_col,(bx,20,int(bw*max(0,self.hp)/self.MAX_HP),22),border_radius=8)
+        pygame.draw.rect(surf,WHITE,(bx,20,bw,22),2,border_radius=8)
+        draw_text(surf,"LORD OF NIGHTMARES",font_sm,WHITE,BOSS_W//2,31)
+        phase_name="Forma Sombria" if self.phase==1 else "Palco do Caos" if self.phase==2 else "Forma Verdadeira"
+        draw_text(surf,f"Fase {self.phase} - {phase_name}",font_tiny,CYAN if self.phase<3 else ORANGE,BOSS_W//2,58)
+
+#                                               FUNÇÕES DE LOOP DOS BOSSES
+
+def run_boss_spider(character, carried_player=None):
+    """
+    Loop principal da luta contra a Aranha Sombria.
+    Retorna (True, player) se vencer, (False, player) se perder.
+    'carried_player' mantém o HP entre bosses.
+    """
+    global tela
+    tela = pygame.display.set_mode((BOSS_W, BOSS_H))
+    clock_b = pygame.time.Clock()
+    player = Player(character)
+    if carried_player: player.hp = min(player.MAX_HP, carried_player.hp + 40)  # Bônus de HP ao entrar
+    spider = SpiderBoss(BOSS_VISUALS["spider"]); particles = []
+
+    while True:
+        dt = clock_b.tick(FPS) / 1000.0
+        events = pygame.event.get()
+        for ev in events:
+            if ev.type == pygame.QUIT: pygame.quit(); sys.exit()
+            if ev.type == pygame.KEYDOWN and ev.key == pygame.K_ESCAPE: pygame.quit(); sys.exit()
+
+        player.update_frank(events, ground_y=GROUND_Y, platforms=[])
+        spider.update(dt, player)
+
+        # Colisão projéteis do jogador com a aranha
+        for b in player.bullets[:]:
+            if b.can_damage and b.rect.colliderect(spider.rect):
+                spider.take_damage(b.damage * 5)  # Multiplicador de dano
+                add_screen_shake(2, 1)
+                for _ in range(8): particles.append(Particle(b.rect.centerx, b.rect.centery, YELLOW))
+                if b.kind == "boomerang":
+                    b.can_damage = False; b.returning = True; b.return_started = True
+                    b.vx = -b.vx; b.vy = -b.vy * 0.9
+                elif b in player.bullets: player.bullets.remove(b)
+
+        # Colisão teias com o jogador
+        for w in spider.webs[:]:
+            if w.rect.colliderect(player.rect):
+                player.take_damage(w.damage); add_screen_shake(2, 1)
+                for _ in range(6): particles.append(Particle(w.rect.centerx, w.rect.centery, CYAN))
+                if w in spider.webs: spider.webs.remove(w)
+
+        if spider.hp <= 0:
+            tela = pygame.display.set_mode((MENU_W, MENU_H)); return True, player
+        if player.hp <= 0 or player.dead:
+            tela = pygame.display.set_mode((MENU_W, MENU_H)); return False, player
+
+        for p in particles[:]:
+            p.update(dt)
+            if p.life <= 0: particles.remove(p)
+
+        spider.draw_bg(tela); spider.draw(tela); player.draw(tela)
+        for p in particles: p.draw(tela)
+        draw_common_hud(tela, player, "BOSS 0 – ARANHA", spider.hp, spider.max_hp, "Floresta das teias")
+
+        # Cursor customizado (mira)
+        mx, my = pygame.mouse.get_pos()
+        pygame.draw.circle(tela, CYAN, (mx, my), 10, 2)
+        pygame.draw.line(tela, CYAN, (mx-14, my), (mx+14, my), 1)
+        pygame.draw.line(tela, CYAN, (mx, my-14), (mx, my+14), 1)
+
+        # Aplica screen shake
+        dx, dy = get_screen_shake_offset()
+        if dx or dy:
+            sh = pygame.Surface((BOSS_W, BOSS_H)); sh.fill(BLACK); sh.blit(tela, (dx, dy)); tela.blit(sh, (0, 0))
+
+        pygame.display.flip()
+
+
+def run_boss_clown(character, carried_player=None):
+    """
+    Loop principal da luta contra o Palhaço.
+    Fase 1: Sobreviver 25s desviando de balões.
+    Fase 2: Plataformas e ataque direto com bolas.
+    """
+    global tela
+    tela = pygame.display.set_mode((BOSS_W, BOSS_H))
+    clock_b = pygame.time.Clock()
+    player = Player(character)
+    if carried_player: player.hp = min(player.MAX_HP, carried_player.hp + 50)
+
+    clown_v = BOSS_VISUALS["clown"]
+    boss = ClownBoss(clown_v)
+    particles = []; spikes = []; vert_balloons = []; track_balloons = []
+    clown_phase = 1; tick = 0
+
+    while True:
+        dt = clock_b.tick(FPS) / 1000.0; tick += 1
+        events = pygame.event.get()
+        for ev in events:
+            if ev.type == pygame.QUIT: pygame.quit(); sys.exit()
+            if ev.type == pygame.KEYDOWN and ev.key == pygame.K_ESCAPE: pygame.quit(); sys.exit()
+
+        plats = CLOWN_PLATFORMS if clown_phase == 2 else []
+        player.update_frank(events, ground_y=GROUND_Y, platforms=plats)
+
+        if clown_phase == 1:
+            boss.update_phase1(dt, player, vert_balloons, track_balloons)
+
+            # Balões verticais: jogador pode atirar neles ou eles explodem no teto
+            for vb in vert_balloons[:]:
+                vb.update(dt)
+                for b in player.bullets[:]:
+                    if vb.rect.colliderect(b.rect) and not vb.popped:
+                        vb.popped = True
+                        spawn_spikes(vb.x, vb.y, spikes, sprite=clown_v.get("spike"))
+                        for _ in range(10): particles.append(Particle(vb.x, vb.y, vb.color))
+                        if b in player.bullets: player.bullets.remove(b)
+                        break
+                if not vb.popped and vb.rect.colliderect(player.rect):
+                    vb.popped = True; player.take_damage(11)
+                    spawn_spikes(vb.x, vb.y, spikes, sprite=clown_v.get("spike"))
+                if not vb.popped and vb.y < -40:
+                    vb.popped = True
+                    spawn_spikes(vb.x, max(0, vb.y), spikes, sprite=clown_v.get("spike"))
+                if vb.popped or vb.y < -80:
+                    if vb in vert_balloons: vert_balloons.remove(vb)
+
+            # Balões rastreadores
+            for tb in track_balloons[:]:
+                tb.update(dt, player.rect)
+                for b in player.bullets[:]:
+                    if not tb.popped and tb.rect.colliderect(b.rect):
+                        tb.popped = True
+                        for _ in range(8): particles.append(Particle(tb.x, tb.y, RED))
+                        if b in player.bullets: player.bullets.remove(b)
+                        break
+                if not tb.popped and tb.rect.colliderect(player.rect):
+                    tb.popped = True; player.take_damage(11)
+                    for _ in range(8): particles.append(Particle(tb.x, tb.y, RED))
+                if tb.popped or tb.rect.x<-60 or tb.rect.x>BOSS_W+60 or tb.rect.y>BOSS_H+60:
+                    if tb in track_balloons: track_balloons.remove(tb)
+
+            # Espinhos danificam o jogador
+            for sp in spikes[:]:
+                sp.update(dt)
+                if sp.rect.colliderect(player.rect):
+                    player.take_damage(7); add_screen_shake(2, 1)
+                if sp.life <= 0:
+                    if sp in spikes: spikes.remove(sp)
+
+            # Transição para fase 2 após sobreviver
+            if boss.p1_timer >= boss.p1_survive_time:
+                clown_phase = 2; boss.phase = 2; boss.rect.x = 50
+                player.bullets.clear(); vert_balloons.clear()
+                track_balloons.clear(); spikes.clear()
+
+        else:  # Fase 2
+            boss.update_phase2(dt, player, vert_balloons)
+
+            # Bolas do boss acertam o jogador
+            for ball in boss.balls[:]:
+                if ball.rect.colliderect(player.rect):
+                    player.take_damage(19 if boss.rage else 15); add_screen_shake(4, 3)
+                    for _ in range(8): particles.append(Particle(ball.x, ball.y, ball.color))
+                    if ball in boss.balls: boss.balls.remove(ball)
+
+            if boss.rect.colliderect(player.rect): player.take_damage(9)
+
+            # Projéteis do jogador acertam o boss
+            for b in player.bullets[:]:
+                if b.can_damage and (b.rect.colliderect(boss.rect) or b.rect.colliderect(boss.head_rect)):
+                    boss.take_damage(b.damage * 5); add_screen_shake(2, 1)
+                    for _ in range(6): particles.append(Particle(b.rect.centerx, b.rect.centery, YELLOW))
+                    if b.kind == "boomerang":
+                        b.can_damage = False; b.returning = True; b.return_started = True
+                        b.vx = -b.vx; b.vy = -b.vy * 0.9
+                    elif b in player.bullets: player.bullets.remove(b)
+
+            # Balões verticais na fase 2 também
+            for vb in vert_balloons[:]:
+                vb.update(dt)
+                for b in player.bullets[:]:
+                    if vb.rect.colliderect(b.rect) and not vb.popped:
+                        vb.popped = True
+                        spawn_spikes(vb.x, vb.y, spikes, sprite=clown_v.get("spike"))
+                        for _ in range(12): particles.append(Particle(vb.x, vb.y, vb.color))
+                        if b in player.bullets: player.bullets.remove(b)
+                        break
+                if not vb.popped and vb.rect.colliderect(player.rect):
+                    vb.popped = True; player.take_damage(11)
+                    spawn_spikes(vb.x, vb.y, spikes, sprite=clown_v.get("spike"))
+                if not vb.popped and vb.y < -40:
+                    vb.popped = True
+                    spawn_spikes(vb.x, max(0, vb.y), spikes, sprite=clown_v.get("spike"))
+                if vb.popped or vb.y < -80:
+                    if vb in vert_balloons: vert_balloons.remove(vb)
+
+            for sp in spikes[:]:
+                sp.update(dt)
+                if sp.rect.colliderect(player.rect): player.take_damage(10)
+                if sp.rect.colliderect(player.rect) or sp.life <= 0:
+                    if sp in spikes: spikes.remove(sp)
+
+            if boss.hp <= 0:
+                tela = pygame.display.set_mode((MENU_W, MENU_H)); return True, player
+
+        if player.hp <= 0 or player.dead:
+            tela = pygame.display.set_mode((MENU_W, MENU_H)); return False, player
+
+        for p in particles[:]:
+            p.update(dt)
+            if p.life <= 0: particles.remove(p)
+
+        # Desenha tudo
+        boss.draw(tela)
+        for vb in vert_balloons: vb.draw(tela)
+        for tb in track_balloons: tb.draw(tela)
+        for ball in boss.balls: ball.draw(tela)
+        player.draw(tela)
+        for sp in spikes: sp.draw(tela)
+        for p in particles: p.draw(tela)
+
+        sub = (f"Sobreviva: {max(0, boss.p1_survive_time - boss.p1_timer):.1f}s"
+               if clown_phase == 1 else f"HP Palhaço: {boss.hp}/{boss.MAX_HP}")
+        draw_common_hud(tela, player, "BOSS 1 – PALHAÇO", None, None, sub)
+
+        mx, my = pygame.mouse.get_pos()
+        pygame.draw.circle(tela, YELLOW, (mx, my), 10, 2)
+        pygame.draw.line(tela, YELLOW, (mx-14, my), (mx+14, my), 1)
+        pygame.draw.line(tela, YELLOW, (mx, my-14), (mx, my+14), 1)
+
+        dx, dy = get_screen_shake_offset()
+        if dx or dy:
+            sh = pygame.Surface((BOSS_W, BOSS_H)); sh.blit(tela, (dx, dy)); tela.blit(sh, (0, 0))
+
+        pygame.display.flip()
+
+
+def run_boss_frank(character, carried_player=None):
+    """
+    Loop principal do Boss 2: Dr. Frankenstein + O Monstro.
+    Fase 1: Derrota o Dr. (500 HP).
+    Fase 2: Derrota o Monstro (850 HP).
+    Ao passar da fase 1 para 2, o jogador recupera 50 HP.
+    """
+    global tela
+    tela = pygame.display.set_mode((BOSS_W, BOSS_H))
+    clock_b = pygame.time.Clock()
+    player = Player(character)
+    player.rect.centerx = BOSS_W // 2; player.rect.bottom = BOSS_H - 80
+    if carried_player: player.hp = min(player.MAX_HP, carried_player.hp + 50)
+
+    doctor = DrFrankenstein(BOSS_VISUALS["frank"])
+    monster = MonsterPhase(BOSS_VISUALS["frank"])
+    phase = 1; tick = 0
+
+    while True:
+        dt = clock_b.tick(FPS) / 1000.0; tick += 1
+        events = pygame.event.get()
+        for ev in events:
+            if ev.type == pygame.QUIT: pygame.quit(); sys.exit()
+            if ev.type == pygame.KEYDOWN and ev.key == pygame.K_ESCAPE: pygame.quit(); sys.exit()
+
+        if player.hp <= 0 or player.dead:
+            tela = pygame.display.set_mode((MENU_W, MENU_H)); return False, player
+
+        player.update_frank(events, ground_y=BOSS_H - 80)
+
+        if phase == 1:
+            doctor.update(player)
+            for b in player.bullets[:]:
+                if b.can_damage and b.rect.colliderect(doctor.rect) and doctor.visible:
+                    doctor.take_damage(b.damage); add_screen_shake(2, 1)
+                    if b.kind == "boomerang":
+                        b.can_damage = False; b.returning = True; b.return_started = True
+                        b.vx = -b.vx; b.vy = -b.vy * 0.9
+                    elif b in player.bullets: player.bullets.remove(b)
+            for b in doctor.bullets[:]:
+                if b.rect.colliderect(player.rect):
+                    player.take_damage(b.damage); add_screen_shake(2, 1)
+                    if b in doctor.bullets: doctor.bullets.remove(b)
+            if doctor.hp <= 0:
+                phase = 2
+                player.hp = min(player.MAX_HP, player.hp + 50)  # Cura ao passar de fase
+                player.bullets.clear(); doctor.bullets.clear()
+        else:
+            monster.update(player); monster.check_hits(player)
+            for b in player.bullets[:]:
+                for hand in monster.hands:
+                    if b.can_damage and b.rect.colliderect(hand.rect):
+                        monster.take_damage(b.damage); add_screen_shake(2, 1)
+                        if b.kind == "boomerang":
+                            b.can_damage = False; b.returning = True; b.return_started = True
+                            b.vx = -b.vx; b.vy = -b.vy * 0.9
+                        elif b in player.bullets: player.bullets.remove(b)
+                        break
+            if monster.hp <= 0:
+                tela = pygame.display.set_mode((MENU_W, MENU_H)); return True, player
+
+        # Renderiza em canvas auxiliar para poder aplicar screen shake com blit
+        canvas = pygame.Surface((BOSS_W, BOSS_H))
+        if phase == 1:
+            doctor.draw(canvas)
+            for b in doctor.bullets: b.draw(canvas)
+            boss_title = "BOSS 2 – DR. FRANKENSTEIN"
+            sub = f"HP Doutor: {doctor.hp}/{doctor.MAX_HP}"
+        else:
+            monster.draw(canvas)
+            boss_title = "BOSS 2 – O MONSTRO"
+            sub = f"HP Monstro: {monster.hp}/{monster.MAX_HP}"
+
+        for b in player.bullets: b.draw(canvas)
+        player.draw(canvas)
+        draw_common_hud(canvas, player, boss_title, None, None, sub)
+
+        mx, my = pygame.mouse.get_pos()
+        pygame.draw.circle(canvas, CYAN, (mx, my), 10, 2)
+        pygame.draw.line(canvas, CYAN, (mx-14, my), (mx+14, my), 1)
+        pygame.draw.line(canvas, CYAN, (mx, my-14), (mx, my+14), 1)
+
+        dx, dy = get_screen_shake_offset()
+        tela.fill(BLACK)
+        tela.blit(canvas, (dx, dy))  # Offset do shake aplicado aqui
+        pygame.display.flip()
+
+
+def run_boss3_final(character, carried_player=None):
+    """
+    Loop principal do Boss Final: Lord of Nightmares.
+    Na fase 3, o dano recebido e causado é reduzido para equilibrar a dificuldade.
+    """
+    global tela
+    tela = pygame.display.set_mode((BOSS_W, BOSS_H))
+    pygame.display.set_caption(TITULO_JANELA)
+    clock_b = pygame.time.Clock()
+    player = Player(character)
+    if carried_player is not None: player.hp = min(player.MAX_HP, carried_player.hp + 70)
+    player.rect.centerx = BOSS_W // 2; player.rect.bottom = GROUND_Y
+    boss = LordOfNightmares(BOSS_VISUALS["lord"]); particles = []
+
+    while True:
+        dt = clock_b.tick(FPS) / 1000.0
+        events = pygame.event.get()
+        for ev in events:
+            if ev.type == pygame.QUIT: pygame.quit(); sys.exit()
+            if ev.type == pygame.KEYDOWN and ev.key == pygame.K_ESCAPE: pygame.quit(); sys.exit()
+
+        player.update_frank(events, ground_y=GROUND_Y, platforms=[])
+        boss.update(player)
+
+        for b in player.bullets[:]:
+            if b.can_damage and b.rect.colliderect(boss.rect):
+                damage = b.damage * 4
+                if boss.phase == 3: damage = int(damage * 0.65)  # Reduz 35% na fase 3
+                boss.hp -= damage; add_screen_shake(3, 2)
+                for _ in range(8): particles.append(Particle(b.rect.centerx, b.rect.centery, ORANGE))
+                if b.kind == "boomerang":
+                    b.can_damage = False; b.returning = True; b.return_started = True
+                    b.vx = -b.vx; b.vy = -b.vy * 0.9
+                else:
+                    if b in player.bullets: player.bullets.remove(b)
+
+        for p in boss.projectiles[:]:
+            if p.rect.colliderect(player.rect):
+                dmg = p.damage
+                if boss.phase == 3: dmg = int(dmg * 0.75)  # Reduz 25% na fase 3
+                player.take_damage(dmg); add_screen_shake(4, 3)
+                for _ in range(8): particles.append(Particle(p.rect.centerx, p.rect.centery, p.color))
+                if p in boss.projectiles: boss.projectiles.remove(p)
+
+        if player.dead or player.hp <= 0:
+            tela = pygame.display.set_mode((MENU_W, MENU_H)); return False, player
+        if boss.hp <= 0:
+            tela = pygame.display.set_mode((MENU_W, MENU_H)); return True, player
+
+        for p in particles[:]:
+            p.update(dt)
+            if p.life <= 0: particles.remove(p)
+
+        boss.draw(tela); player.draw(tela)
+        for p in particles: p.draw(tela)
+        draw_common_hud(tela, player, "BOSS 3 – LORD OF NIGHTMARES",
+                        boss.hp, boss.MAX_HP, f"FASE {boss.phase}")
+
+        mx, my = pygame.mouse.get_pos()
+        pygame.draw.circle(tela, RED, (mx, my), 10, 2)
+        pygame.draw.line(tela, RED, (mx-14, my), (mx+14, my), 1)
+        pygame.draw.line(tela, RED, (mx, my-14), (mx, my+14), 1)
+
+        dx, dy = get_screen_shake_offset()
+        if dx or dy:
+            shake = pygame.Surface((BOSS_W, BOSS_H))
+            shake.blit(tela, (dx, dy)); tela.blit(shake, (0, 0))
+
+        pygame.display.flip()
+
+
+
+#                                                    LOOP PRINCIPAL DO JOGO
+
+def run_game():
+    """
+    Função principal que orquestra todo o fluxo do jogo:
+    Menu → Seleção → História → Boss 0 → História → Boss 1 →
+    História → Boss 2 → História → Boss 3 → Vitória Final.
+    Cada boss pode resultar em game over (com opção de reiniciar).
+    """
+    global tela
+    tela = pygame.display.set_mode((MENU_W, MENU_H))
+    pygame.display.set_caption(TITULO_JANELA)
+
+    # Menu principal
+    stop_music(200); play_music(MUSICA_MENU)
+    menu_t = 0.0
+    while True:
+        dt = relogio.tick(FPS) / 1000.0; menu_t += dt
+        events = pygame.event.get(); clicked_start = False
+        for ev in events:
+            if ev.type == pygame.QUIT: pygame.quit(); sys.exit()
+            if ev.type == pygame.KEYDOWN and ev.key == pygame.K_ESCAPE: pygame.quit(); sys.exit()
+            if botao.clicado(ev): clicked_start = True
+        render_menu(pygame.mouse.get_pos(), menu_t)
+        pygame.display.flip()
+        if clicked_start:
+            if som_clique: som_clique.play()
+            break
+
+    # Seleção de personagem 
+    character = character_select()
+
+    # História inicial 
+    stop_music(200); play_music(MUSICA_HISTORIA1)
+    run_story_generic(HISTORIA, "HALLOWEEN ADVENTURES")
+
+    # Boss 0: Aranha 
+    stop_music(200); play_music(MUSICA_BOSS)
+    win, player = run_boss_spider(character)
+    tela = pygame.display.set_mode((MENU_W, MENU_H))
+    if not win:
+        stop_music(200)
+        if final_screen("GAME OVER", "A aranha venceu"): return run_game()  # Reinicia o jogo
+        return
+
+    # História pós-aranha 
+    stop_music(200); play_music(MUSICA_FASE2)
+    run_story_generic(STORY_AFTER_SPIDER, "APOS A ARANHA")
+
+    # Boss 1: Palhaço 
+    stop_music(200); play_music(MUSICA_BOSS)
+    win, player = run_boss_clown(character, carried_player=player)
+    tela = pygame.display.set_mode((MENU_W, MENU_H))
+    if not win:
+        stop_music(200)
+        if final_screen("GAME OVER", "O palhaço venceu"): return run_game()
+        return
+
+    # História pós-palhaço 
+    stop_music(200); play_music(MUSICA_FASE2)
+    run_story_generic(STORY_AFTER_CLOWN, "APOS O PALHACO")
+
+    # Boss 2: Frankenstein 
+    stop_music(200); play_music(MUSICA_BOSS)
+    win, player = run_boss_frank(character, carried_player=player)
+    tela = pygame.display.set_mode((MENU_W, MENU_H))
+    if not win:
+        stop_music(200)
+        if final_screen("GAME OVER", "Frankenstein venceu"): return run_game()
+        return
+
+    # História pós-Frankenstein 
+    stop_music(200); play_music(MUSICA_FASE2)
+    run_story_generic(STORY_AFTER_FRANK, "APOS FRANKENSTEIN")
+
+    # Boss 3: Lord of Nightmares 
+    stop_music(200); play_music(MUSICA_BOSS)
+    win, player = run_boss3_final(character, carried_player=player)
+    tela = pygame.display.set_mode((MENU_W, MENU_H))
+    if not win:
+        stop_music(200)
+        if final_screen("GAME OVER", "O Lord of Nightmares venceu"): return run_game()
+        return
+
+    # História da vitória 
+    stop_music(200); play_music(MUSICA_FASE2)
+    run_story_generic(STORY_AFTER_LORD, "VITORIA FINAL")
+
+    # Tela de vitória 
+    stop_music(200)
+    if final_screen("VOCE VENCEU!", "Os quatro bosses foram derrotados"):
+        return run_game()  # Permite jogar novamente
+
+#                                                   PONTO DE ENTRADA
+
+if __name__ == "__main__":
+    try:
+        run_game()
+    except Exception:
+        import traceback
+        traceback.print_exc()                    # Exibe o erro completo no console
+        input("Pressione ENTER para fechar...")  # Mantém a janela aberta para leitura do erro
